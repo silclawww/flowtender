@@ -13,6 +13,8 @@ import {
   XCircle,
   Clock,
   Loader2,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { MermaidDiagram } from '@/app/components/MermaidDiagram';
 import { workflowToMermaid, type NodeStatus } from '@/lib/workflow-to-mermaid';
@@ -96,6 +98,82 @@ function formatDuration(ms: number | undefined | null): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-zinc-200 transition-colors"
+      title="Copy to clipboard"
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-green-600" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" style={{ color: '#71717A' }} />
+      )}
+    </button>
+  );
+}
+
+// Colorize JSON with syntax highlighting
+function colorizeJson(json: string): string {
+  // Replace keys (property names before colons)
+  let result = json.replace(/"([^"]+)":/g, '<span style="color: #2563EB">"$1"</span>:');
+  
+  // Replace string values (strings after colons, not already colored)
+  result = result.replace(/: "([^"]*)"/g, ': <span style="color: #059669">"$1"</span>');
+  
+  // Replace numbers
+  result = result.replace(/: (-?\d+\.?\d*)/g, ': <span style="color: #D97706">$1</span>');
+  
+  // Replace booleans
+  result = result.replace(/: (true|false)/g, ': <span style="color: #DC2626">$1</span>');
+  
+  // Replace null
+  result = result.replace(/: (null)/g, ': <span style="color: #71717A">$1</span>');
+  
+  return result;
+}
+
+function JsonViewer({ data, label }: { data: object[]; label: string }) {
+  const [showFull, setShowFull] = useState(false);
+  const jsonStr = JSON.stringify(data, null, 2);
+  const colorizedHtml = colorizeJson(jsonStr);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-medium" style={{ color: '#71717A' }}>
+          {label}
+        </div>
+        <button
+          onClick={() => setShowFull(!showFull)}
+          className="text-xs px-2 py-0.5 rounded border hover:bg-zinc-100"
+          style={{ borderColor: '#E4E4E7', color: '#71717A' }}
+        >
+          {showFull ? 'Collapse' : 'Show full'}
+        </button>
+      </div>
+      <pre
+        className={`bg-zinc-50 p-3 rounded text-xs font-mono overflow-auto ${showFull ? '' : 'max-h-96'}`}
+        style={{ color: '#09090B' }}
+        dangerouslySetInnerHTML={{ __html: colorizedHtml }}
+      />
+    </div>
+  );
+}
+
 function NodeRunRow({ nodeRun }: { nodeRun: NodeRun }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -142,22 +220,8 @@ function NodeRunRow({ nodeRun }: { nodeRun: NodeRun }) {
 
       {expanded && (
         <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs font-medium mb-2" style={{ color: '#71717A' }}>
-              Input
-            </div>
-            <pre className="bg-zinc-50 p-3 rounded text-xs font-mono overflow-auto max-h-64" style={{ color: '#09090B' }}>
-              {JSON.stringify(nodeRun.input, null, 2)}
-            </pre>
-          </div>
-          <div>
-            <div className="text-xs font-medium mb-2" style={{ color: '#71717A' }}>
-              Output
-            </div>
-            <pre className="bg-zinc-50 p-3 rounded text-xs font-mono overflow-auto max-h-64" style={{ color: '#09090B' }}>
-              {JSON.stringify(nodeRun.output, null, 2)}
-            </pre>
-          </div>
+          <JsonViewer data={nodeRun.input} label="Input" />
+          <JsonViewer data={nodeRun.output} label="Output" />
         </div>
       )}
     </div>
@@ -267,6 +331,16 @@ export default function ExecutionDetailPage() {
     return workflowToMermaid(workflowDef, getNodeStatuses());
   }, [workflow, getNodeStatuses]);
 
+  // Calculate stats
+  const stats = execution?.node_runs
+    ? {
+        total: execution.node_runs.length,
+        passed: execution.node_runs.filter((n) => n.status === 'done').length,
+        failed: execution.node_runs.filter((n) => n.status === 'error').length,
+        running: execution.node_runs.filter((n) => n.status === 'running').length,
+      }
+    : null;
+
   if (loading) {
     return (
       <div className="min-h-screen" style={{ backgroundColor: '#FAFAF9' }}>
@@ -287,7 +361,7 @@ export default function ExecutionDetailPage() {
             style={{ color: '#71717A' }}
           >
             <ArrowLeft className="w-4 h-4" />
-            Zurück
+            Back
           </Link>
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
             {error}
@@ -314,11 +388,42 @@ export default function ExecutionDetailPage() {
               style={{ color: '#71717A' }}
             >
               <ArrowLeft className="w-4 h-4" />
-              Zurück
+              Back to Executions
             </Link>
+            
+            {/* Prominent workflow_id and tender_id */}
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium uppercase" style={{ color: '#71717A' }}>Workflow:</span>
+                <span 
+                  className="inline-flex items-center px-2 py-1 rounded text-sm font-mono font-bold"
+                  style={{ backgroundColor: '#F4F4F5', color: '#09090B' }}
+                >
+                  {execution.workflow_id}
+                </span>
+                <CopyButton text={execution.workflow_id} />
+              </div>
+              
+              {execution.tender_id && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium uppercase" style={{ color: '#71717A' }}>Tender:</span>
+                  <a
+                    href={`${TENDER_SERVER}/tenders/${execution.tender_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center px-2 py-1 rounded text-sm font-mono hover:underline"
+                    style={{ backgroundColor: '#EFF6FF', color: '#2563EB' }}
+                  >
+                    {execution.tender_id.substring(execution.tender_id.length - 8)}
+                  </a>
+                  <CopyButton text={execution.tender_id} />
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-xl font-bold font-mono" style={{ color: '#09090B' }}>
-                {execution.workflow_id}
+              <h1 className="text-xl font-bold" style={{ color: '#09090B' }}>
+                Execution Details
               </h1>
               <StatusBadge status={execution.status} />
             </div>
@@ -336,7 +441,7 @@ export default function ExecutionDetailPage() {
                   style={{ color: '#09090B' }}
                 >
                   <ExternalLink className="w-4 h-4" />
-                  Ausschreibung ansehen
+                  View Tender
                 </a>
               )}
             </div>
@@ -353,16 +458,42 @@ export default function ExecutionDetailPage() {
               ) : (
                 <RotateCcw className="w-4 h-4" />
               )}
-              Erneut versuchen
+              Retry
             </button>
           )}
         </div>
       </header>
 
       <main className="p-6">
+        {/* Stats Bar */}
+        {stats && (
+          <div 
+            className="flex items-center gap-6 px-4 py-3 rounded mb-6 text-sm"
+            style={{ backgroundColor: '#F4F4F5' }}
+          >
+            <span style={{ color: '#09090B' }}>
+              <strong>{stats.total}</strong> nodes
+            </span>
+            <span className="text-green-700">
+              <strong>{stats.passed}</strong> passed
+            </span>
+            <span className="text-red-700">
+              <strong>{stats.failed}</strong> failed
+            </span>
+            {stats.running > 0 && (
+              <span className="text-amber-700">
+                <strong>{stats.running}</strong> running
+              </span>
+            )}
+            <span style={{ color: '#71717A' }}>
+              Total: <strong>{formatDuration(execution.duration_ms)}</strong>
+            </span>
+          </div>
+        )}
+
         {execution.status === 'error' && execution.error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
-            <div className="font-medium">Ausführung fehlgeschlagen</div>
+            <div className="font-medium">Execution Failed</div>
             <div className="text-sm mt-1">{execution.error}</div>
           </div>
         )}
@@ -371,7 +502,7 @@ export default function ExecutionDetailPage() {
         {mermaidChart && (
           <div className="mb-6">
             <h2 className="text-sm font-medium uppercase tracking-wider mb-4" style={{ color: '#71717A' }}>
-              Workflow Diagramm
+              Workflow Diagram
             </h2>
             <div
               className="border rounded p-4 overflow-auto"
@@ -391,7 +522,7 @@ export default function ExecutionDetailPage() {
         {execution.node_runs.length === 0 ? (
           <div className="flex items-center justify-center py-12 gap-3" style={{ color: '#71717A' }}>
             <Loader2 className="w-5 h-5 animate-spin" />
-            <span>Wird ausgeführt...</span>
+            <span>Running...</span>
           </div>
         ) : (
           <div className="border rounded" style={{ borderColor: '#E4E4E7', backgroundColor: '#FFFFFF' }}>
