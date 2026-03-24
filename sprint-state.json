@@ -1,0 +1,563 @@
+{
+  "sprint_id": "sprint-20260324-0620",
+  "objective": "Build flowtender — a lightweight workflow automation engine that replaces n8n for Tenderly's 3-stage PDF/GAEB tender analysis pipeline. Deliverables: (1) a workflow runner that reads JSON workflow definitions from the repo and executes them as typed node steps, (2) HTTP trigger endpoints that replace n8n webhooks, (3) a web-based execution inspector showing per-node status + input/output JSON, (4) full port of all 3 Tenderly pipeline stages as workflow definitions, (5) Tenderly updated to call flowtender instead of n8n, fixing the tenders-list empty bug. The result: I (the AI) own the entire pipeline and can modify it without Sil having to touch n8n.",
+  "repo": "silclawww/flowtender",
+  "started_at": "2026-03-24T06:20:00Z",
+  "target_duration_hours": 8,
+  "cron_job_id": null,
+  "status": "in_progress",
+  "max_concurrent_subagents": 4,
+  "wave_count": 0,
+  "context": {
+    "local_path": "/home/ubuntu/.openclaw/workspace-swe/flowtender",
+    "tenderly_path": "/home/ubuntu/.openclaw/workspace-swe/tenderly-agent",
+    "port": 3845,
+    "supabase_url": "https://eltpxayfieksnnsglvuj.supabase.co",
+    "supabase_access_token": "sbp_959ee65a8124d464e4eb8be3f605560e913bdfd0",
+    "supabase_project_id": "eltpxayfieksnnsglvuj",
+    "xai_key_env": "XAI_API_KEY",
+    "n8n_workflow_summary": {
+      "stage1_gaeb": "Webhook → Detect File Type → Switch(gaeb/archive) → A: Parse GAEB passthrough → B: Normalise GAEB Output (build tenderRow) → C: Write to tenders → Return Metadata",
+      "stage1_pdf": "Webhook → Detect File Type → Switch(pdf) → Submit PDF to Datalab Marker → Wait(3s) → Fetch Result → If(status==complete) → Generate Tender ID → Extract Metadata LLM (grok-3-mini) → Parse Metadata → Save to DB → Return Metadata",
+      "stage2": "Webhook(tender_id) → Load Tender Data → Set processing_status=extracting_details → Extract Requirements LLM (grok-3-mini, full pdf_text) → Parse Requirements → Save to DB + Return",
+      "stage3": "Webhook(tender_id) → Load Requirements → [Mock Company Profile] → Evaluate LLM (grok-3, requirements vs profile) → Parse Evaluation → Save to DB + Return",
+      "key_insight": "Company profile in n8n is a HARDCODED mock (TechBid Solutions GmbH). Must replace with real data from Supabase company_profiles table using the org_id on the tender."
+    },
+    "design_system": "Zinc/slate palette from Tenderly: bg #FAFAF9, text #09090B, muted #71717A, border #E4E4E7. Same Tailwind tokens. No purple, no gradients, no emoji. font-bold max. Lucide icons.",
+    "node_types_to_implement": [
+      "code — execute inline TypeScript/JS function with $input/$json context",
+      "http_request — POST/GET with headers, body, auth, 429 auto-retry",
+      "supabase.query — SELECT with filters",
+      "supabase.upsert — INSERT ... ON CONFLICT DO UPDATE",
+      "supabase.update — UPDATE with filter",
+      "switch — route to one of N outputs based on condition",
+      "if — route to true/false based on condition",
+      "respond — return HTTP response to trigger caller",
+      "wait — pause N seconds (for polling loops)"
+    ],
+    "workflow_json_format": {
+      "description": "Each workflow is a JSON file in workflows/ dir. Format: { id, name, nodes: [{id, type, config, position}], edges: [{from, from_output, to, to_input}] }",
+      "execution_context": "$input.first().json, $json (shorthand), $('<node_id>').first().json for referencing upstream nodes"
+    }
+  },
+  "tasks": [
+    {
+      "id": 0,
+      "title": "Core type definitions + project structure",
+      "type": "build",
+      "description": "Set up the foundational TypeScript types and folder structure for flowtender. Create: (1) types/workflow.ts — WorkflowDefinition, WorkflowNode, WorkflowEdge, NodeType enum, ExecutionStatus enum; (2) types/execution.ts — WorkflowExecution, NodeRun, TriggerPayload; (3) lib/ folder structure: lib/runner/, lib/nodes/, lib/supabase/, workflows/; (4) Install deps: @supabase/supabase-js @supabase/ssr uuid. Do NOT implement logic yet — types + structure only. Also write a minimal README.md explaining what flowtender is and how it works.",
+      "acceptance_criteria": [
+        "types/workflow.ts exports all workflow definition types",
+        "types/execution.ts exports all execution types",
+        "folder structure created: lib/runner/, lib/nodes/, lib/supabase/, workflows/",
+        "npm install @supabase/supabase-js @supabase/ssr uuid succeeds",
+        "README.md written",
+        "npm run build passes"
+      ],
+      "depends_on": [],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 1,
+      "title": "Supabase client setup + migration 001",
+      "type": "db",
+      "description": "Create Supabase client files and the flowtender DB schema. (1) lib/supabase/client.ts — browser client using createBrowserClient from @supabase/ssr; (2) lib/supabase/service.ts — server client using the service role key (SUPABASE_SERVICE_ROLE_KEY env); (3) supabase/migrations/001_flowtender_schema.sql — create tables: flow_executions (id UUID PK, workflow_id TEXT, trigger_payload JSONB, status TEXT, tender_id UUID nullable, started_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ, duration_ms INT, error TEXT) and flow_node_runs (id UUID PK DEFAULT gen_random_uuid(), execution_id UUID REFERENCES flow_executions ON DELETE CASCADE, node_id TEXT, node_type TEXT, node_name TEXT, input JSONB, output JSONB, status TEXT DEFAULT 'pending', error TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, duration_ms INT); Apply via Supabase Management API: POST https://api.supabase.com/v1/projects/eltpxayfieksnnsglvuj/database/query with access token sbp_959ee65a8124d464e4eb8be3f605560e913bdfd0 and the migration SQL as the query body.",
+      "acceptance_criteria": [
+        "lib/supabase/client.ts and service.ts created",
+        "Migration 001 SQL file created",
+        "Tables flow_executions and flow_node_runs exist in Supabase",
+        "npm run build passes"
+      ],
+      "depends_on": [0],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 2,
+      "title": "WorkflowLoader — load + validate workflow JSON from repo",
+      "type": "build",
+      "description": "Create lib/runner/loader.ts. This module reads workflow definition JSON files from the workflows/ directory (at build time and/or runtime). Functions: (1) loadWorkflow(workflowId: string): WorkflowDefinition — reads workflows/{workflowId}.json, parses and validates; (2) listWorkflows(): string[] — returns all workflow IDs from workflows/ dir; (3) validateWorkflow(def: unknown): WorkflowDefinition — validates the shape, throws on invalid; Also create the workflows/ directory with a placeholder workflows/README.md explaining the format. The loader must work in the Next.js API route context (server-side). Use fs/promises for file reading. The workflows/ directory is at the repo root.",
+      "acceptance_criteria": [
+        "lib/runner/loader.ts exports loadWorkflow and listWorkflows",
+        "workflows/ directory created with README.md",
+        "TypeScript compiles (npm run build passes)"
+      ],
+      "depends_on": [0],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 3,
+      "title": "Node executor — code (inline JS)",
+      "type": "build",
+      "description": "Create lib/nodes/code.ts. Implements the 'code' node type — executes inline JavaScript. The node config has: { code: string } where the code string is the function body. The executor wraps it in an async function and calls it. Execution context: { $input: { first: () => { json: object }, all: () => Array<{json: object}> }, $json: object (shorthand for $input.first().json), $('<node_id>'): same API but referencing any upstream node output (lookup from executionContext map) }. The code string may use require() — support only: 'crypto', 'util', 'path' (no external modules). Returns: an array of output items [{ json: {...} }]. Handle errors with try/catch, return { error: string } in output. See the n8n workflow for examples of code that must run: Parse Metadata, Parse Requirements, Parse Evaluation nodes. Also export a NodeExecutor interface that all node types implement: execute(config, input: ExecutionItem[], ctx: ExecutionContext): Promise<ExecutionItem[]>",
+      "acceptance_criteria": [
+        "lib/nodes/code.ts implements NodeExecutor interface",
+        "Can execute basic JS code with $input and $json",
+        "Handles JSON.parse/stringify in code strings",
+        "Error caught and returned in output",
+        "TypeScript compiles"
+      ],
+      "depends_on": [0],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 4,
+      "title": "Node executor — http_request",
+      "type": "build",
+      "description": "Create lib/nodes/http-request.ts. Implements the 'http_request' node type. Config: { method: 'GET'|'POST', url: string, headers: Record<string,string>, body: string, auth_type: 'bearer'|'header'|'none', auth_value: string }. The url, body, and header values can contain {{ expression }} templates that are evaluated against the execution context (use a simple template eval: replace {{ expr }} with result of eval(expr) in context). Returns [{json: response_body}]. Auto-retry on 429: extract Retry-After header or wait 5s, up to 3 retries. Handle non-2xx as error. The xAI API calls from n8n are the primary use case — must handle JSON response body.",
+      "acceptance_criteria": [
+        "lib/nodes/http-request.ts implements NodeExecutor",
+        "Supports POST with JSON body",
+        "Template expressions work in url/body/headers",
+        "429 auto-retry works",
+        "TypeScript compiles"
+      ],
+      "depends_on": [0],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 5,
+      "title": "Node executor — supabase (query/upsert/update)",
+      "type": "build",
+      "description": "Create lib/nodes/supabase.ts. Implements supabase node types: 'supabase.query' (SELECT), 'supabase.upsert' (INSERT ... ON CONFLICT DO UPDATE), 'supabase.update' (UPDATE with filter). Uses the service role client from lib/supabase/service.ts. Config for query: { table: string, filters: [{column, operator, value}], select: string }. Config for upsert: { table: string, data: 'auto_map' | object } where auto_map uses the full $json as the data object. Config for update: { table: string, filters: [...], data: object | 'auto_map' }. All config values support {{ expression }} template evaluation. Returns [{json: row}] for query, [{json: written_row}] for upsert/update.",
+      "acceptance_criteria": [
+        "lib/nodes/supabase.ts implements NodeExecutor for all 3 types",
+        "auto_map mode works (passes full $json as data)",
+        "Template expressions work in filters and data",
+        "TypeScript compiles"
+      ],
+      "depends_on": [0, 1],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 6,
+      "title": "Node executor — switch + if + wait + respond",
+      "type": "build",
+      "description": "Create lib/nodes/control.ts. Implements 4 control node types: (1) 'switch' — config: { rules: [{condition: string, output_index: number}] }. Evaluates each condition as JS expression against context, returns on first match. Input passes through unchanged to the matched output. (2) 'if' — config: { condition: string }. If truthy → output 0, else → output 1. (3) 'wait' — config: { seconds: number }. Pauses execution (setTimeout). Returns input unchanged. (4) 'respond' — config: { status_code: number }. Marks the execution as ready to respond. This node type signals the trigger handler to send HTTP response with current input as body. Returns input unchanged.",
+      "acceptance_criteria": [
+        "lib/nodes/control.ts implements all 4 node types",
+        "switch routes correctly based on condition",
+        "if routes to 0 or 1 correctly",
+        "TypeScript compiles"
+      ],
+      "depends_on": [0],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 7,
+      "title": "Core WorkflowRunner engine",
+      "type": "build",
+      "description": "Create lib/runner/runner.ts — the core execution engine. WorkflowRunner class. Method: run(workflowId, triggerPayload, options?): Promise<ExecutionResult>. Algorithm: (1) Load workflow via WorkflowLoader; (2) Create flow_executions row in Supabase with status 'running'; (3) Build adjacency map from edges; (4) Find start nodes (no incoming edges); (5) Execute nodes in topological order, respecting branching from switch/if; (6) For each node: create flow_node_runs row (status=running), call the appropriate executor, update row (status=done/error, output, duration_ms); (7) Pass outputs to downstream nodes based on edges; (8) If a 'respond' node is reached AND options.synchronous=true, capture the response payload; (9) Update flow_executions to done/error when all paths complete. ExecutionContext: map of nodeId → output items, used by $('<node_id>') references. The runner must handle branching: when a switch/if node routes to output 0 or 1, only execute nodes on that branch. Export: createRunner() factory.",
+      "acceptance_criteria": [
+        "lib/runner/runner.ts exports WorkflowRunner class",
+        "Topological execution works",
+        "Branching (switch/if) routes correctly",
+        "flow_executions + flow_node_runs rows written to Supabase",
+        "Synchronous mode returns captured respond-node payload",
+        "TypeScript compiles"
+      ],
+      "depends_on": [1, 2, 3, 4, 5, 6],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 8,
+      "title": "HTTP trigger API route — POST /api/flow/trigger/[workflowId]",
+      "type": "build",
+      "description": "Create app/api/flow/trigger/[workflowId]/route.ts. This is the HTTP entry point that replaces n8n webhooks. Behavior: (1) Parse workflowId from path; (2) Read request body as JSON (or octet-stream for file uploads — store metadata in triggerPayload, not the file itself); (3) Validate API key from Authorization header (Bearer token must equal SUPABASE_SERVICE_ROLE_KEY or a dedicated FLOWTENDER_API_KEY env var); (4) Call WorkflowRunner.run(workflowId, triggerPayload, { synchronous: true }); (5) Return the HTTP response payload from the 'respond' node, or 200 { execution_id } if async. Also create app/api/flow/status/[executionId]/route.ts — GET returns flow_executions + all flow_node_runs for that execution (used by the inspector UI and by Tenderly for polling).",
+      "acceptance_criteria": [
+        "POST /api/flow/trigger/[workflowId] exists and runs the workflow",
+        "GET /api/flow/status/[executionId] returns execution + node runs",
+        "Bearer auth check works",
+        "npm run build passes"
+      ],
+      "depends_on": [7],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 9,
+      "title": "Workflow definition — Stage 1 GAEB/archive path",
+      "type": "build",
+      "description": "Create workflows/tender-stage1-gaeb.json. This replaces n8n Stage 1 GAEB branch. The workflow receives the pre-parsed GAEB payload from Tenderly's upload route and writes the tender row. Nodes: (1) trigger (input: { tender_id, org_id, user_id, gaeb_files[], documents[], has_plans, archive_summary, source_filename, extracted_fields }) — note: Tenderly already calls extractAndPersistTenderData server-side, so the deadline/vergabeart fields are already in Supabase; the workflow just needs to write the core tender row; (2) code node 'Normalise GAEB' — build the tenderRow object (same logic as n8n Node B: title from primary GAEB project, buyer from owner, item_count, lot_count, trade_category, source_type='gaeb', processing_status='metadata_ready', pdf_text=serializeGaebText(), raw_gaeb_json); (3) supabase.upsert 'Write to tenders' — table='tenders', auto_map; (4) respond — 200 with { id: tender_id, processing_status: 'metadata_ready' }. The normalise code node should include the serializeGaebText helper inline (copy the logic from n8n Node B, it's already been tested). IMPORTANT: the tender_id MUST come from the trigger payload (not generated here — it was pre-generated by the upload route).",
+      "acceptance_criteria": [
+        "workflows/tender-stage1-gaeb.json is valid JSON",
+        "Has 4 nodes: trigger, code (normalise), supabase.upsert, respond",
+        "Uses tender_id from trigger payload (not crypto.randomUUID())",
+        "Code node includes serializeGaebText logic",
+        "File parseable by WorkflowLoader"
+      ],
+      "depends_on": [2],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 10,
+      "title": "Workflow definition — Stage 1 PDF path",
+      "type": "build",
+      "description": "Create workflows/tender-stage1-pdf.json. This replaces n8n Stage 1 PDF branch. Nodes: (1) trigger (input: { tender_id, org_id, user_id, file_data (base64 PDF), file_name, file_type='pdf' }); (2) code node 'Extract PDF Text' — decode base64 to Buffer, extract text using pdf-parse (PDFParse class). Note: pdf-parse is in the TENDERLY project, not flowtender. For flowtender, use a REST call to a helper endpoint OR inline the extraction. Since flowtender has access to the same filesystem, install pdf-parse in flowtender too. Config: { code: 'const { PDFParse } = require(\"pdf-parse\"); const buf = Buffer.from($json.file_data, \"base64\"); const p = new PDFParse(); const {text, numpages} = await p.parse(buf); return [{ json: { ...$json, pdf_text: text, page_count: numpages, text_for_metadata: text.substring(0,6000) } }];' }; (3) http_request 'Extract Metadata LLM' — POST to xAI API with metadata extraction prompt (same as n8n 'Extract Metadata API Call'); (4) code 'Parse Metadata' — same logic as n8n Parse Metadata node, but tender_id comes from $('trigger').first().json.tender_id; (5) supabase.upsert 'Save to DB'; (6) respond. Note: skip the Marker API polling loop for now — use pdf-parse directly (can be upgraded later).",
+      "acceptance_criteria": [
+        "workflows/tender-stage1-pdf.json is valid JSON",
+        "PDF text extraction node uses pdf-parse",
+        "LLM metadata extraction prompt matches n8n's (grok-3-mini, temp=0)",
+        "Uses tender_id from trigger payload",
+        "File parseable"
+      ],
+      "depends_on": [2],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 11,
+      "title": "Workflow definition — Stage 2 requirements extraction",
+      "type": "build",
+      "description": "Create workflows/tender-stage2-requirements.json. This replaces n8n Stage 2. Input: { tender_id }. Nodes: (1) trigger; (2) supabase.query 'Load Tender' — load tender by id, need: pdf_text, id, org_id; (3) supabase.update 'Set Status Extracting' — set processing_status='extracting_details'; (4) http_request 'Extract Requirements LLM' — POST to xAI API. Model: grok-3-mini (fast) or grok-3 (better). Use the SAME system prompt as n8n: extract requirements in categories Technical/Commercial/Legal/Operational/HSE/Quality/Eligibility. Schema: [{id, category, title, description, is_critical, source_fragments}]. Input: pdf_text from Load Tender; (5) code 'Parse Requirements' — same as n8n Parse Requirements node; (6) supabase.update 'Save Requirements' — update tenders row: requirements=parsed, processing_status='details_ready'; (7) respond — { processing_status: 'details_ready' }. ENHANCEMENT vs n8n: after step 5, also add a step to extract Type-2 requirements (eligibility + operational) specifically from pdf_texts_extracted if available — but keep as separate node, not blocking.",
+      "acceptance_criteria": [
+        "workflows/tender-stage2-requirements.json is valid JSON",
+        "Uses same LLM prompt as n8n for requirements extraction",
+        "Loads pdf_text from tenders table",
+        "Sets processing_status correctly",
+        "File parseable"
+      ],
+      "depends_on": [2],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 12,
+      "title": "Workflow definition — Stage 3 evaluation",
+      "type": "build",
+      "description": "Create workflows/tender-stage3-evaluation.json. This replaces n8n Stage 3. CRITICAL DIFFERENCE from n8n: instead of hardcoded mock company profile, load real profile from Supabase. Input: { tender_id }. Nodes: (1) trigger; (2) supabase.query 'Load Requirements' — get tender by id (need: id, requirements, org_id); (3) supabase.query 'Load Company Profile' — query company_profiles table WHERE org_id = {{ $('load-requirements').first().json.org_id }}; (4) code 'Prepare Eval Context' — build { tender_id, company_profile: $('load-company-profile').first().json, requirements: $('load-requirements').first().json.requirements, requirements_json: JSON.stringify(...) }; (5) http_request 'Evaluate LLM' — POST to xAI. Model: grok-3 (use SMART model for evaluation). Use same system prompt as n8n: bid recommendation, strategic_fit_score, eligibility_requirements, risks, clarifications, response_format: json_object; (6) code 'Parse Evaluation' — same as n8n; (7) supabase.update 'Save Evaluation'; (8) respond. If company profile is null (not onboarded), use fallback with empty capabilities so evaluation still runs.",
+      "acceptance_criteria": [
+        "workflows/tender-stage3-evaluation.json is valid JSON",
+        "Loads REAL company profile from Supabase (not mock)",
+        "Uses grok-3 model for evaluation quality",
+        "Same output schema as n8n (strategic_fit_score, bid_recommendation, etc.)",
+        "File parseable"
+      ],
+      "depends_on": [2],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 13,
+      "title": "Main trigger API route — smart routing",
+      "type": "build",
+      "description": "Create app/api/flow/trigger/route.ts (without workflowId in path — for the Tenderly-compatible URLs). This handles the backwards-compatible webhook URLs: POST /api/flow/trigger?workflow=tender-stage1-gaeb etc. OR POST /api/flow/webhook/tender-metadata (maps to stage1), /tender-details (maps to stage2), /tender-evaluation (maps to stage3). The Tenderly upload route and store currently call n8n URLs — this provides a drop-in replacement. Create app/api/flow/webhook/[path]/route.ts that maps: tender-metadata → trigger tender-stage1-gaeb or tender-stage1-pdf based on file_type in body; tender-details → tender-stage2-requirements; tender-evaluation → tender-stage3-evaluation. Runs the workflow and returns the response. This approach means Tenderly only needs to change the URL base (n8n cloud → localhost:3845).",
+      "acceptance_criteria": [
+        "POST /api/flow/webhook/tender-metadata works (routes to stage1-gaeb or stage1-pdf)",
+        "POST /api/flow/webhook/tender-details works (routes to stage2)",
+        "POST /api/flow/webhook/tender-evaluation works (routes to stage3)",
+        "Runs workflow via WorkflowRunner",
+        "npm run build passes"
+      ],
+      "depends_on": [7, 8],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 14,
+      "title": "Inspector UI — executions list page",
+      "type": "build",
+      "description": "Build app/page.tsx — the main flowtender inspector. Replace the default Next.js starter page. Shows a table of all recent workflow executions from flow_executions table. Columns: Workflow, Tender (link to Tenderly /tenders/[id] if tender_id set), Status (badge: running/done/error), Duration, Started At, Actions (View button). Use the zinc/slate design system: same tokens as Tenderly (#09090B, #71717A, #E4E4E7, .card style). Fetch from /api/flow/executions (create this endpoint too). The page auto-refreshes every 5s if any execution is 'running'. Status badges: running (amber), done (green), error (red). No auth for now (add later). Also create app/api/flow/executions/route.ts — GET returns last 50 executions ordered by started_at DESC.",
+      "acceptance_criteria": [
+        "app/page.tsx shows executions table",
+        "GET /api/flow/executions returns execution list",
+        "Status badges correct",
+        "Auto-refreshes when executions are running",
+        "npm run build passes"
+      ],
+      "depends_on": [1],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 15,
+      "title": "Inspector UI — execution detail page with node timeline",
+      "type": "build",
+      "description": "Build app/execution/[id]/page.tsx — execution detail view. Shows: (1) Header: workflow name, status, total duration, tender link; (2) Node timeline: ordered list of flow_node_runs, each showing: node name, type, status badge, duration, expand/collapse button; (3) Node detail (expanded): two-panel JSON viewer — left: input JSON (pretty-printed, truncated at 2000 chars), right: output JSON. Handles error state: if status=error, show error message in red. Shows 'running' spinner for nodes currently executing. Auto-polls every 3s if execution status = running. No workflow canvas (no React Flow) — just the linear timeline table. Fetch from /api/flow/status/[id] (already created in task 8). Clean design matching Tenderly's aesthetic.",
+      "acceptance_criteria": [
+        "app/execution/[id]/page.tsx shows node timeline",
+        "Input/output JSON display works (collapsible)",
+        "Running state shows spinner",
+        "Error state shows error message",
+        "Auto-polls during active execution",
+        "npm run build passes"
+      ],
+      "depends_on": [8, 14],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 16,
+      "title": "Update Tenderly upload route — call flowtender instead of n8n",
+      "type": "integration",
+      "description": "Edit /home/ubuntu/.openclaw/workspace-swe/tenderly-agent/app/api/upload/route.ts. Replace the n8n webhook call with a call to flowtender. (1) Add env var FLOWTENDER_URL=http://localhost:3845 to Tenderly's .env.local; (2) Change the Stage 1 call: instead of POSTing to https://tenderlyai.app.n8n.cloud/webhook/tender-metadata, POST to http://localhost:3845/api/flow/webhook/tender-metadata with the same payload; (3) The upload route also calls extractAndPersistTenderData (fire-and-forget) which writes PDF-extracted fields. Keep this — it runs in parallel with the flowtender stage1 call; (4) The flowtender webhook call is synchronous (await the response); (5) If flowtender is unreachable (connection refused), fall back gracefully: write the tender row directly in the upload route using the service client, so uploads never fail silently. Add env var FLOWTENDER_ENABLED=true to toggle this path. Test: the upload route should still return { id, processing_status } to the client.",
+      "acceptance_criteria": [
+        "Upload route calls flowtender instead of n8n",
+        "FLOWTENDER_URL env var used",
+        "Fallback if flowtender unreachable",
+        "Build passes in tenderly-agent"
+      ],
+      "depends_on": [13],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 17,
+      "title": "Update Tenderly store — call flowtender for Stage 2 + 3",
+      "type": "integration",
+      "description": "Edit /home/ubuntu/.openclaw/workspace-swe/tenderly-agent/lib/store.ts. Update fetchDetails and fetchEvaluation to call flowtender instead of n8n webhooks. (1) fetchDetails: change the URL from https://tenderlyai.app.n8n.cloud/webhook/tender-details to ${process.env.NEXT_PUBLIC_FLOWTENDER_URL}/api/flow/webhook/tender-details; (2) fetchEvaluation: similarly for tender-evaluation; (3) Add NEXT_PUBLIC_FLOWTENDER_URL=http://100.116.26.90:3845 to Tenderly's .env.local (uses LAN IP so browser can reach it); (4) The payload format stays the same: { tender_id }; (5) If env var is missing, keep n8n as fallback URL so nothing breaks immediately. Also update types/index.ts if needed to include summary field on Tender type. Note: summary is generated by Stage 2 in n8n (as part of requirements) — check if our new Stage 2 also writes a summary field. Build: npm run build in tenderly-agent.",
+      "acceptance_criteria": [
+        "fetchDetails calls flowtender URL when NEXT_PUBLIC_FLOWTENDER_URL is set",
+        "fetchEvaluation calls flowtender URL",
+        "Fallback to n8n if env var not set",
+        "Tenderly build passes"
+      ],
+      "depends_on": [13],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 18,
+      "title": "PM2 setup + local deployment",
+      "type": "config",
+      "description": "Set up PM2 to run flowtender alongside Tenderly. (1) Create ecosystem.config.js in flowtender repo root: { name: 'flowtender', script: 'node_modules/.bin/next', args: 'start -p 3845', cwd: '/home/ubuntu/.openclaw/workspace-swe/flowtender', env: { PORT: '3845', NODE_ENV: 'production' } }; (2) Run npm run build in flowtender; (3) Start with pm2 start ecosystem.config.js; (4) Verify: curl http://localhost:3845/ returns 200; (5) Save PM2 config: pm2 save; (6) Update workspace ecosystem.config.js at /home/ubuntu/.openclaw/workspace-swe/ecosystem.config.js to include flowtender app; (7) Check curl http://localhost:3845/api/flow/executions returns JSON (should be empty array if no executions yet).",
+      "acceptance_criteria": [
+        "flowtender builds successfully",
+        "pm2 starts flowtender on port 3845",
+        "curl http://localhost:3845/ returns 200",
+        "curl http://localhost:3845/api/flow/executions returns JSON",
+        "pm2 list shows flowtender online"
+      ],
+      "depends_on": [8, 13, 14],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 19,
+      "title": "End-to-end test — upload .avasign, verify all 3 stages",
+      "type": "test",
+      "description": "Run an end-to-end test of the full pipeline using the real .avasign test file. Steps: (1) Ensure flowtender is running on port 3845; (2) Ensure Tenderly is running on port 3844 with FLOWTENDER_ENABLED=true; (3) Directly call the upload API with curl using the test file: curl -X POST http://localhost:3844/api/upload -H 'Content-Type: application/octet-stream' -H 'X-File-Name: LHH_19-0265-26_67369.avasign' -H 'Cookie: <auth_session>' --data-binary @/home/ubuntu/.openclaw/workspace-swe/gaebreader/avadata/LHH_19-0265-26_67369.avasign; (4) Check Supabase for the new tender row: verify it exists, has title, buyer, item_count, processing_status=metadata_ready; (5) Trigger Stage 2: curl -X POST http://localhost:3845/api/flow/webhook/tender-details -H 'Content-Type: application/json' -d '{\"tender_id\":\"<id>\"}'; (6) Check flow_node_runs for the Stage 2 execution; (7) Trigger Stage 3; (8) Check final tender row: must have strategic_fit_score, bid_recommendation, requirements. (9) Output test report with all results. Note: For step 3 auth, get a valid session token from Supabase using the service role or use a test approach (call the route directly with service role header if auth is checked). Look at how the current upload route handles auth.",
+      "acceptance_criteria": [
+        "Tender row created in Supabase after Stage 1",
+        "Stage 2 execution appears in flow_node_runs",
+        "Stage 3 writes bid_recommendation and strategic_fit_score",
+        "Tenders list at /tenders shows the new tender",
+        "Test report written"
+      ],
+      "depends_on": [16, 17, 18],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 20,
+      "title": "Summary field generation in Stage 2",
+      "type": "build",
+      "description": "The n8n Stage 2 doesn't generate a summary field — but Tenderly's TenderDetail page shows a 'Zusammenfassung' / project summary section that currently never gets populated. Add a summary generation step to the Stage 2 workflow (workflows/tender-stage2-requirements.json). After the requirements LLM call, add a second http_request node that generates a concise 2-3 sentence project summary from the pdf_text. Model: grok-3-mini. Prompt: 'Erstelle eine prägnante Zusammenfassung (2-3 Sätze) der folgenden Ausschreibung für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert werden, wo, und für wen.' Update the supabase.update node to also write summary field. Also update the supabase.update to write has_plans field from the tender data. Verify: Tender type in Tenderly has summary field, TenderDetail page displays it.",
+      "acceptance_criteria": [
+        "Stage 2 workflow generates and saves a summary",
+        "summary field written to tenders table",
+        "Build passes"
+      ],
+      "depends_on": [11],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 21,
+      "title": "Retry mechanism — re-run failed node from execution detail",
+      "type": "build",
+      "description": "Add retry functionality to the execution detail page and backend. (1) Backend: create POST /api/flow/retry/[executionId] — re-runs the workflow from the failed node onwards (or re-runs the entire execution). For simplicity, re-run the entire execution with the original trigger_payload stored in flow_executions; (2) Frontend: add a 'Retry' button to the execution detail page (visible when status=error); (3) The retry creates a new flow_executions row (not modifying the old one); (4) Update UI to show the new execution after retry. Also add a 'Cancel' button concept for running executions (set status=cancelled in DB — the runner should check for cancellation between nodes).",
+      "acceptance_criteria": [
+        "POST /api/flow/retry/[executionId] re-runs the workflow",
+        "Retry button appears on error executions in UI",
+        "New execution created on retry",
+        "Build passes"
+      ],
+      "depends_on": [15],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 22,
+      "title": "Workflow canvas — static Mermaid diagram",
+      "type": "build",
+      "description": "Add a static workflow diagram to the execution detail page using Mermaid.js. Each workflow definition has a visual representation. For each workflow: generate a Mermaid flowchart string from the nodes and edges in the workflow JSON. Render it on the execution detail page above the node timeline. Use mermaid npm package. The diagram should show: node names as boxes, edges as arrows, color-code nodes based on their run status (green=done, amber=running, red=error, grey=pending). Since Mermaid CSS classes can be applied per node, use classDef for status colors. Install: npm install mermaid. This gives Sil the visual representation they wanted from n8n — they can see the workflow shape at a glance.",
+      "acceptance_criteria": [
+        "Mermaid diagram renders on execution detail page",
+        "Node boxes color-coded by run status",
+        "Workflow shape matches the JSON definition",
+        "Build passes"
+      ],
+      "depends_on": [15],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 23,
+      "title": "install pdf-parse in flowtender",
+      "type": "config",
+      "description": "Install pdf-parse in the flowtender repo so the Stage 1 PDF workflow can use it. Run: npm install pdf-parse @types/node in /home/ubuntu/.openclaw/workspace-swe/flowtender. Verify that require('pdf-parse') works from a code node executor (the code node uses require() for safe modules — pdf-parse should be on the allowed list since it's in node_modules). Update lib/nodes/code.ts allowedModules list if needed. Also add the pdf-parse types or declare module if TypeScript complains. Run npm run build to verify.",
+      "acceptance_criteria": [
+        "pdf-parse installed in flowtender",
+        "npm run build passes",
+        "require('pdf-parse') works from code executor"
+      ],
+      "depends_on": [3],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    },
+    {
+      "id": 24,
+      "title": "Workflow node — gaeb-parse (call Tenderly GAEB parser)",
+      "type": "build",
+      "description": "Create a special node type 'gaeb_parse' in lib/nodes/gaeb.ts. This node calls Tenderly's GAEB parser (lib/gaeb-parser-n8n.js) via a direct API call to Tenderly's internal endpoint, or by importing the module. Since flowtender and Tenderly share the same filesystem, flowtender can require() the GAEB parser from the Tenderly project. Config: { gaeb_parser_path: '../tenderly-agent/lib/gaeb-parser-n8n.js' }. Input: { file_data (base64), file_name }. Output: { gaeb_files[], documents[], has_plans, archive_summary }. This eliminates the need for the Stage 1 GAEB workflow to do its own parsing — it can call this node type. Actually, on reflection, the GAEB parsing already happens in Tenderly's upload route before calling flowtender — so this node type may not be needed for Stage 1. Keep it for future use (if someone sends a raw file to flowtender directly). Mark as 'optional' — implement the node executor but don't wire it into any workflow yet.",
+      "acceptance_criteria": [
+        "lib/nodes/gaeb.ts exports node executor",
+        "Can call the GAEB parser from flowtender",
+        "TypeScript compiles"
+      ],
+      "depends_on": [3],
+      "status": "pending",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "output_summary": null,
+      "review_notes": null,
+      "needs_retry": false
+    }
+  ],
+  "active_subagents": [],
+  "completed_cycle_count": 0,
+  "last_cycle_at": null,
+  "blockers": [],
+  "sprint_notes": "The n8n workflow JSON has been analyzed. Key decisions: (1) Stage 1 GAEB path is simple — 4 nodes, GAEB already parsed by Tenderly. (2) Stage 1 PDF path uses Datalab Marker API in n8n — we'll use pdf-parse instead. (3) Stage 3 company profile is HARDCODED MOCK in n8n — we'll use real Supabase data. (4) Model names in n8n: grok-4-1-fast-non-reasoning → grok-3-mini, grok-4-1-fast-reasoning → grok-3. (5) The runner must support both synchronous (return response) and async (fire-and-forget) modes. (6) Tenderly will use LAN IP (100.116.26.90:3845) for browser-originated calls, and localhost:3845 for server-to-server calls.",
+  "completed_at": null
+}
