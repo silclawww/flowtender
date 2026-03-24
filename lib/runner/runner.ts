@@ -4,6 +4,7 @@ import { codeExecutor } from '@/lib/nodes/code';
 import { httpRequestExecutor } from '@/lib/nodes/http-request';
 import { supabaseExecutors } from '@/lib/nodes/supabase';
 import { controlExecutors } from '@/lib/nodes/control';
+import { gaebParseExecutor } from '@/lib/nodes/gaeb';
 import { createServiceClient } from '@/lib/supabase/service';
 import type { WorkflowNode } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
@@ -12,6 +13,7 @@ import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/exec
 const NODE_EXECUTORS: Record<string, NodeExecutor> = {
   code: codeExecutor,
   http_request: httpRequestExecutor,
+  gaeb_parse: gaebParseExecutor,
   ...supabaseExecutors,
   ...controlExecutors,
 };
