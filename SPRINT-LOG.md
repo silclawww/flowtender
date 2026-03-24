@@ -39,6 +39,63 @@
 
 ---
 
+## Sprint Complete — 2026-03-24T07:04Z
+
+**Duration:** ~44 minutes (of 8-hour budget)
+**Tasks Completed:** 25/25 (100%)
+**Final Build:** ✅ Passing
+
+### What Was Built
+
+**Core Engine:**
+- WorkflowRunner with BFS topological execution
+- Node executors: code, http_request, supabase (query/upsert/update), switch, if, wait, respond, gaeb_parse
+- Workflow JSON loader with validation
+
+**API Layer:**
+- `POST /api/flow/trigger/[workflowId]` — direct workflow trigger
+- `POST /api/flow/webhook/[path]` — n8n-compatible webhook routing
+- `GET /api/flow/executions` — list all executions
+- `GET /api/flow/status/[id]` — execution detail with node runs
+- `POST /api/flow/retry/[id]` — retry failed executions
+
+**Workflows (3 Tenderly Pipeline Stages):**
+- `tender-stage1-gaeb.json` — GAEB/archive metadata extraction
+- `tender-stage1-pdf.json` — PDF metadata extraction via LLM
+- `tender-stage2-requirements.json` — Requirements extraction + summary generation
+- `tender-stage3-evaluation.json` — Bid evaluation with **real company profiles** (not n8n mock!)
+
+**Inspector UI:**
+- Executions list with auto-refresh
+- Execution detail with node timeline
+- Mermaid workflow diagram with status coloring
+- Retry button for failed executions
+
+**Tenderly Integration:**
+- Upload route calls flowtender Stage 1
+- `/api/tender/details` calls flowtender Stage 2
+- `/api/tender/evaluation` calls flowtender Stage 3
+- Graceful fallback if flowtender unreachable
+
+**Infrastructure:**
+- PM2 ecosystem config for flowtender on port 3845
+- Supabase tables: `flow_executions`, `flow_node_runs`
+
+### End-to-End Test Result
+
+✅ Real `.avasign` file uploaded → Stage 1 completed in 4.7s → Tender "Neubau 4 Züge und Sporthalle" created with 230 items
+
+### Key Improvements Over n8n
+
+1. **Real company profiles** — Stage 3 loads from Supabase instead of hardcoded mock
+2. **Summary generation** — Stage 2 now generates project summaries
+3. **Full observability** — Every node run logged with input/output JSON
+4. **Retry mechanism** — Failed executions can be retried with exponential backoff
+5. **Visual workflow diagram** — Mermaid renders workflow shape with status colors
+6. **I own it** — No external service dependency, full control over the pipeline
+
+---
+
 ## Cycle Log
 
-_Sprint started 2026-03-24T06:20Z. 25 tasks generated. Wave 1 launching: tasks 0, 3, 4, 6 (all independent node foundation work)._
+_Sprint started 2026-03-24T06:20Z. 25 tasks generated. All tasks completed by 07:04Z._
