@@ -1,7 +1,7 @@
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
 
 // Modules allowed in code nodes (safe subset)
-const ALLOWED_MODULES = ['crypto', 'util', 'path', 'zlib'];
+const ALLOWED_MODULES = ['crypto', 'util', 'path', 'zlib', 'pdf-parse'];
 
 export const codeExecutor: NodeExecutor = {
   async execute(config, input, context) {
