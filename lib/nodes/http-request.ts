@@ -14,8 +14,8 @@ function evalTemplate(
         all: () => context.get(nodeId) || [],
       });
       // eslint-disable-next-line no-new-func
-      const fn = new Function('$input', '$json', '$', 'JSON', `return (${expr})`);
-      const result = fn($input, $json, $nodeRef, JSON);
+      const fn = new Function('$input', '$json', '$', 'JSON', 'process', `return (${expr})`);
+      const result = fn($input, $json, $nodeRef, JSON, process);
       if (typeof result === 'string') return result;
       return JSON.stringify(result);
     } catch {

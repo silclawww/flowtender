@@ -1,0 +1,64 @@
+{
+  "id": "tender-stage1-pdf",
+  "name": "Stage 1: PDF Upload",
+  "description": "Receives PDF upload from Tenderly, extracts text, calls xAI to extract metadata, writes tender row to Supabase.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "code",
+      "name": "Trigger Input",
+      "config": { "code": "return [{ json: $json }];" }
+    },
+    {
+      "id": "extract-text",
+      "type": "code",
+      "name": "Extract PDF Text",
+      "config": {
+        "code": "const pdfParse = require('pdf-parse');\nconst buf = Buffer.from($json.file_data, 'base64');\nconst data = await pdfParse(buf);\nreturn [{ json: { ...$json, pdf_text: data.text, page_count: data.numpages, text_for_metadata: data.text.substring(0, 6000), file_data: undefined } }];"
+      }
+    },
+    {
+      "id": "extract-metadata-llm",
+      "type": "http_request",
+      "name": "Extract Metadata LLM",
+      "config": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_type": "bearer",
+        "auth_value": "{{ process.env.XAI_API_KEY }}",
+        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Extract key metadata from the tender document. Return a valid JSON object with EXACTLY these fields: {\"title\": \"Concise tender title (3-4 words describing task and location)\", \"summary\": \"One concise sentence describing the procurement scope\", \"buyer\": \"Issuing organization name\", \"region\": \"Geographic location\", \"deadline\": \"Submission deadline in YYYY-MM-DD format or null\", \"category\": \"Brief category\", \"tender_type\": \"goods|services|works|mixed\"}. The output language must match the document language. Return ONLY the JSON object.' }, { role: 'user', content: $json.text_for_metadata }], temperature: 0 }) }}"
+      }
+    },
+    {
+      "id": "parse-metadata",
+      "type": "code",
+      "name": "Parse Metadata",
+      "config": {
+        "code": "const tenderId = $('trigger').first().json.tender_id;\nconst pdfText = $('extract-text').first().json.pdf_text;\nconst pageCount = $('extract-text').first().json.page_count;\nconst orgId = $('trigger').first().json.org_id;\nconst userId = $('trigger').first().json.user_id;\nconst sourceFilename = $('trigger').first().json.file_name || $('trigger').first().json.source_filename || '';\n\nlet metadata;\ntry {\n  const aiContent = $json.choices[0].message.content;\n  const cleaned = aiContent.replace(/```json/g, '').replace(/```/g, '').trim();\n  metadata = JSON.parse(cleaned);\n} catch (e) {\n  metadata = { title: 'Unbekannte Ausschreibung', buyer: null, deadline: null, summary: null, region: null, category: null, tender_type: null };\n}\n\nreturn [{ json: {\n  id: tenderId,\n  org_id: orgId,\n  user_id: userId,\n  title: metadata.title || 'Unbekannte Ausschreibung',\n  buyer: metadata.buyer || null,\n  deadline: metadata.deadline || null,\n  summary: metadata.summary || null,\n  region: metadata.region || null,\n  category: metadata.category || null,\n  tendertype: metadata.tender_type || null,\n  source_type: 'pdf',\n  source_filename: sourceFilename,\n  pdf_text: pdfText,\n  page_count: pageCount,\n  processing_status: 'metadata_ready'\n} }];"
+      }
+    },
+    {
+      "id": "save",
+      "type": "supabase.upsert",
+      "name": "Save Metadata to DB",
+      "config": {
+        "table": "tenders",
+        "data": "auto_map",
+        "on_conflict": "id"
+      }
+    },
+    {
+      "id": "respond",
+      "type": "respond",
+      "name": "Return Metadata",
+      "config": { "status_code": 200 }
+    }
+  ],
+  "edges": [
+    { "from": "trigger", "from_output": 0, "to": "extract-text" },
+    { "from": "extract-text", "from_output": 0, "to": "extract-metadata-llm" },
+    { "from": "extract-metadata-llm", "from_output": 0, "to": "parse-metadata" },
+    { "from": "parse-metadata", "from_output": 0, "to": "save" },
+    { "from": "save", "from_output": 0, "to": "respond" }
+  ]
+}
