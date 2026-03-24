@@ -69,6 +69,14 @@
       }
     },
     {
+      "id": "build-response-3",
+      "type": "code",
+      "name": "Build Stage 3 Response",
+      "config": {
+        "code": "const eval_data = $('parse-evaluation').first().json;\nreturn [{ json: {\n  id: eval_data.id,\n  strategic_fit_score: eval_data.strategic_fit_score,\n  bid_recommendation: eval_data.bid_recommendation,\n  eligibility_summary: eval_data.eligibility_summary,\n  eligibility_requirements: eval_data.eligibility_requirements || [],\n  risks: eval_data.risks || [],\n  clarifications: eval_data.clarifications || [],\n  processing_status: 'complete'\n} }];"
+      }
+    },
+    {
       "id": "respond",
       "type": "respond",
       "name": "Return Evaluation",
@@ -82,6 +90,7 @@
     { "from": "prepare-context", "from_output": 0, "to": "evaluate-llm" },
     { "from": "evaluate-llm", "from_output": 0, "to": "parse-evaluation" },
     { "from": "parse-evaluation", "from_output": 0, "to": "save-evaluation" },
-    { "from": "save-evaluation", "from_output": 0, "to": "respond" }
+    { "from": "save-evaluation", "from_output": 0, "to": "build-response-3" },
+    { "from": "build-response-3", "from_output": 0, "to": "respond" }
   ]
 }

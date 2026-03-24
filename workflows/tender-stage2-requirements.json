@@ -82,6 +82,14 @@
       }
     },
     {
+      "id": "build-response-2",
+      "type": "code",
+      "name": "Build Stage 2 Response",
+      "config": {
+        "code": "const saved = $('parse-summary').first().json;\nconst tender = $('load-tender').first().json;\nreturn [{ json: {\n  id: tender.id || $json.id,\n  requirements: saved.requirements || [],\n  summary: saved.summary || '',\n  processing_status: 'details_ready',\n  execution_start: tender.execution_start || null,\n  execution_end: tender.execution_end || null,\n  has_plans: tender.has_plans || false,\n  required_documents: tender.required_documents || null,\n  award_description: tender.award_description || null,\n  cpv_codes: tender.cpv_codes || null,\n  award_criteria: tender.award_criteria || null,\n  vergabeart: tender.vergabeart || null,\n  lot_info: tender.lot_info || null\n} }];"
+      }
+    },
+    {
       "id": "respond",
       "type": "respond",
       "name": "Return Requirements",
@@ -96,6 +104,7 @@
     { "from": "parse-requirements", "from_output": 0, "to": "generate-summary" },
     { "from": "generate-summary", "from_output": 0, "to": "parse-summary" },
     { "from": "parse-summary", "from_output": 0, "to": "save-requirements" },
-    { "from": "save-requirements", "from_output": 0, "to": "respond" }
+    { "from": "save-requirements", "from_output": 0, "to": "build-response-2" },
+    { "from": "build-response-2", "from_output": 0, "to": "respond" }
   ]
 }
