@@ -14,6 +14,9 @@ import {
   Clock,
   Loader2,
 } from 'lucide-react';
+import { MermaidDiagram } from '@/app/components/MermaidDiagram';
+import { workflowToMermaid, type NodeStatus } from '@/lib/workflow-to-mermaid';
+import type { WorkflowDefinition, WorkflowNode, WorkflowEdge } from '@/types/workflow';
 
 interface NodeRun {
   id: string;
@@ -39,6 +42,16 @@ interface Execution {
   duration_ms?: number;
   error?: string;
   node_runs: NodeRun[];
+}
+
+interface WorkflowResponse {
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  nodes: Omit<WorkflowNode, 'config'>[];
+  edges: WorkflowEdge[];
+  error?: string;
 }
 
 const TENDER_SERVER = 'http://100.116.26.90:3844';
@@ -157,6 +170,7 @@ export default function ExecutionDetailPage() {
   const executionId = params.id as string;
 
   const [execution, setExecution] = useState<Execution | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -175,6 +189,22 @@ export default function ExecutionDetailPage() {
       setLoading(false);
     }
   }, [executionId]);
+
+  // Fetch workflow definition when execution is loaded
+  useEffect(() => {
+    if (!execution?.workflow_id) return;
+
+    fetch(`/api/flow/workflows/${execution.workflow_id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.error) {
+          setWorkflow(data);
+        }
+      })
+      .catch(() => {
+        // Silently ignore workflow fetch errors - diagram just won't show
+      });
+  }, [execution?.workflow_id]);
 
   useEffect(() => {
     fetchExecution();
@@ -202,6 +232,40 @@ export default function ExecutionDetailPage() {
       setRetrying(false);
     }
   };
+
+  // Build node status map from node_runs
+  const getNodeStatuses = useCallback((): Record<string, NodeStatus> => {
+    if (!execution?.node_runs) return {};
+    const statuses: Record<string, NodeStatus> = {};
+    for (const run of execution.node_runs) {
+      // Map status string to NodeStatus type
+      const status = run.status as NodeStatus;
+      if (['pending', 'running', 'done', 'error'].includes(status)) {
+        statuses[run.node_id] = status;
+      }
+    }
+    return statuses;
+  }, [execution?.node_runs]);
+
+  // Generate Mermaid chart
+  const getMermaidChart = useCallback((): string | null => {
+    if (!workflow) return null;
+
+    // Convert WorkflowResponse to WorkflowDefinition (add empty config)
+    const workflowDef: WorkflowDefinition = {
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      version: workflow.version,
+      nodes: workflow.nodes.map((n) => ({
+        ...n,
+        config: {},
+      })),
+      edges: workflow.edges,
+    };
+
+    return workflowToMermaid(workflowDef, getNodeStatuses());
+  }, [workflow, getNodeStatuses]);
 
   if (loading) {
     return (
@@ -236,6 +300,8 @@ export default function ExecutionDetailPage() {
   if (!execution) {
     return null;
   }
+
+  const mermaidChart = getMermaidChart();
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAFAF9' }}>
@@ -298,6 +364,21 @@ export default function ExecutionDetailPage() {
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
             <div className="font-medium">Ausführung fehlgeschlagen</div>
             <div className="text-sm mt-1">{execution.error}</div>
+          </div>
+        )}
+
+        {/* Workflow Diagram */}
+        {mermaidChart && (
+          <div className="mb-6">
+            <h2 className="text-sm font-medium uppercase tracking-wider mb-4" style={{ color: '#71717A' }}>
+              Workflow Diagramm
+            </h2>
+            <div
+              className="border rounded p-4 overflow-auto"
+              style={{ borderColor: '#E4E4E7', backgroundColor: '#FFFFFF' }}
+            >
+              <MermaidDiagram chart={mermaidChart} className="flex justify-center" />
+            </div>
           </div>
         )}
 
