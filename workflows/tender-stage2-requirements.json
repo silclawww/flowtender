@@ -1,0 +1,77 @@
+{
+  "id": "tender-stage2-requirements",
+  "name": "Stage 2: Requirements Extraction",
+  "description": "Loads tender pdf_text from Supabase, calls xAI to extract structured requirements, saves them back.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "code",
+      "name": "Trigger Input",
+      "config": { "code": "const body = $json.body || $json;\nreturn [{ json: { tender_id: body.tender_id } }];" }
+    },
+    {
+      "id": "load-tender",
+      "type": "supabase.query",
+      "name": "Load Tender Data",
+      "config": {
+        "table": "tenders",
+        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.tender_id }}" }],
+        "single": true
+      }
+    },
+    {
+      "id": "set-status",
+      "type": "supabase.update",
+      "name": "Set Status: Extracting",
+      "config": {
+        "table": "tenders",
+        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.id }}" }],
+        "data": { "processing_status": "extracting_details" }
+      }
+    },
+    {
+      "id": "extract-requirements-llm",
+      "type": "http_request",
+      "name": "Extract Requirements LLM",
+      "config": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_type": "bearer",
+        "auth_value": "{{ process.env.XAI_API_KEY }}",
+        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Your task is to extract all material requirements from a tender document and categorise them. The answer must be in the same language as the tender document is written and must sound natural but concise. A requirement is a contractually or technically significant obligation, condition, deliverable, performance criterion, compliance requirement, or eligibility expectation that would materially affect bidding, delivery, risk, cost, or evaluation. The Tender Document can include standard clauses with general rules that are not related to specific tender delivery, sometimes having a big share of the overall document. Ignore those and focus on the actual tender task. Another part of the document often is a long list of items required for delivery. Do not reproduce items in your answer but infer what is built and what is the high level description of that thing and make it the requirement (or multiple requirements if needed). CRITICAL EXTRACTION RULES: Do NOT extract procedural or administrative noise. OUTPUT REQUIREMENTS: - Return ONLY valid JSON. - Use the following schema exactly: {\"requirements\":[{\"id\":\"REQ-001\",\"category\":\"Technical | Commercial | Legal | Operational | HSE | Quality | Eligibility | Other\",\"title\":\"action task related\",\"description\":\"\",\"is_critical\":true,\"source_fragments\":[]}]}' }, { role: 'user', content: $('load-tender').first().json.pdf_text || '' }], temperature: 0 }) }}"
+      }
+    },
+    {
+      "id": "parse-requirements",
+      "type": "code",
+      "name": "Parse Requirements",
+      "config": {
+        "code": "const content = $json.choices[0].message.content;\nlet requirements = [];\ntry {\n  const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  requirements = parsed.requirements || [];\n} catch (e) {\n  console.error('Failed to parse requirements:', e);\n}\nreturn [{ json: { requirements } }];"
+      }
+    },
+    {
+      "id": "save-requirements",
+      "type": "supabase.update",
+      "name": "Save Requirements",
+      "config": {
+        "table": "tenders",
+        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $('load-tender').first().json.id }}" }],
+        "data": { "requirements": "{{ $json.requirements }}", "processing_status": "details_ready" }
+      }
+    },
+    {
+      "id": "respond",
+      "type": "respond",
+      "name": "Return Requirements",
+      "config": { "status_code": 200 }
+    }
+  ],
+  "edges": [
+    { "from": "trigger", "from_output": 0, "to": "load-tender" },
+    { "from": "load-tender", "from_output": 0, "to": "set-status" },
+    { "from": "set-status", "from_output": 0, "to": "extract-requirements-llm" },
+    { "from": "extract-requirements-llm", "from_output": 0, "to": "parse-requirements" },
+    { "from": "parse-requirements", "from_output": 0, "to": "save-requirements" },
+    { "from": "save-requirements", "from_output": 0, "to": "respond" }
+  ]
+}
