@@ -1,36 +1,134 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Flowtender
+
+A lightweight, self-hosted workflow automation engine purpose-built for construction tender processing. Flowtender replaces n8n with a focused, type-safe solution optimized for the tender pipeline.
+
+## Purpose
+
+Flowtender automates the 3-stage construction tender pipeline:
+
+1. **Ingest** — Parse GAEB files, extract tender data, normalize formats
+2. **Enrich** — Query external APIs, calculate costs, apply business rules
+3. **Respond** — Generate quotes, send notifications, update systems
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Flowtender                           │
+├─────────────────────────────────────────────────────────────┤
+│  HTTP Triggers (webhooks, API calls)                        │
+│         ↓                                                   │
+│  Workflow Engine                                            │
+│    • Loads workflow definitions (JSON)                      │
+│    • Executes nodes in topological order                    │
+│    • Tracks execution state per node                        │
+│         ↓                                                   │
+│  Node Executors                                             │
+│    • code, http_request, supabase.*, switch, if, etc.       │
+│         ↓                                                   │
+│  Supabase (persistence + real-time)                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+- **`types/`** — Core type definitions for workflows and execution
+- **`lib/runner/`** — Workflow execution engine
+- **`lib/nodes/`** — Node type implementations
+- **`lib/supabase/`** — Supabase client and utilities
+- **`workflows/`** — Workflow definition JSON files
+- **`app/`** — Next.js app (visual inspector + API routes)
+
+### Visual Inspector
+
+Flowtender includes a built-in visual inspector for debugging and monitoring workflow executions. Access it at:
+
+```
+http://localhost:3845
+```
+
+The inspector shows:
+- Active and completed workflow runs
+- Node-by-node execution details
+- Input/output data for each step
+- Timing and error information
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- Supabase project (for persistence)
+
+### Installation
+
+```bash
+npm install
+```
+
+### Environment Variables
+
+Create a `.env.local` file:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+### Development
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app runs on port 3845 by default.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+```
 
-## Learn More
+### Production
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run start
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Workflow Definition
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Workflows are defined as JSON files in the `workflows/` directory. See [`workflows/README.md`](./workflows/README.md) for the full specification.
 
-## Deploy on Vercel
+### Supported Node Types
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Type | Description |
+|------|-------------|
+| `code` | Execute custom JavaScript/TypeScript |
+| `http_request` | Make HTTP requests |
+| `supabase.query` | Query Supabase |
+| `supabase.upsert` | Upsert to Supabase |
+| `supabase.update` | Update Supabase records |
+| `switch` | Multi-way conditional routing |
+| `if` | Binary conditional |
+| `wait` | Pause execution |
+| `respond` | HTTP response |
+| `gaeb_parse` | Parse GAEB tender files |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## HTTP Triggers
+
+Workflows can be triggered via HTTP:
+
+```bash
+POST /api/workflows/:workflow_id/trigger
+Content-Type: application/json
+
+{
+  "tender_id": "abc123",
+  "file_url": "https://..."
+}
+```
+
+## License
+
+MIT
