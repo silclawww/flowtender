@@ -65,7 +65,15 @@
       "config": {
         "table": "tenders",
         "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.id }}" }],
-        "data": "auto_map"
+        "data": {
+          "strategic_fit_score": "{{ $json.strategic_fit_score }}",
+          "bid_recommendation": "{{ $json.bid_recommendation }}",
+          "eligibility_summary": "{{ JSON.stringify($json.eligibility_summary) }}",
+          "eligibility_requirements": "{{ JSON.stringify($json.eligibility_requirements) }}",
+          "risks": "{{ JSON.stringify($json.risks) }}",
+          "clarifications": "{{ JSON.stringify($json.clarifications) }}",
+          "processing_status": "{{ $json.processing_status }}"
+        }
       }
     },
     {
