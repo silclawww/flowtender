@@ -10,11 +10,18 @@ export type NodeType =
   | 'respond'
   | 'gaeb_parse';
 
+export interface NodeRetryConfig {
+  max_attempts?: number;  // default: 1 (no retry)
+  delay_ms?: number;      // delay between retries, default: 1000
+  backoff?: 'linear' | 'exponential';  // default: 'linear'
+}
+
 export interface WorkflowNode {
   id: string;
   type: NodeType;
   name: string;
   config: Record<string, unknown>;
+  retry?: NodeRetryConfig;
   position?: { x: number; y: number };
 }
 

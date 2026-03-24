@@ -27,7 +27,8 @@
         "auth_type": "bearer",
         "auth_value": "{{ process.env.XAI_API_KEY }}",
         "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Extract key metadata from the tender document. Return a valid JSON object with EXACTLY these fields: {\"title\": \"Concise tender title (3-4 words describing task and location)\", \"summary\": \"One concise sentence describing the procurement scope\", \"buyer\": \"Issuing organization name\", \"region\": \"Geographic location\", \"deadline\": \"Submission deadline in YYYY-MM-DD format or null\", \"category\": \"Brief category\", \"tender_type\": \"goods|services|works|mixed\"}. The output language must match the document language. Return ONLY the JSON object.' }, { role: 'user', content: $json.text_for_metadata }], temperature: 0 }) }}"
-      }
+      },
+      "retry": { "max_attempts": 3, "delay_ms": 2000, "backoff": "exponential" }
     },
     {
       "id": "parse-metadata",

@@ -6,8 +6,43 @@ import { supabaseExecutors } from '@/lib/nodes/supabase';
 import { controlExecutors } from '@/lib/nodes/control';
 import { gaebParseExecutor } from '@/lib/nodes/gaeb';
 import { createServiceClient } from '@/lib/supabase/service';
-import type { WorkflowNode } from '@/types/workflow';
+import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
+
+/**
+ * Execute a node with retry logic for transient failures
+ */
+async function executeWithRetry(
+  executor: NodeExecutor,
+  config: Record<string, unknown>,
+  input: ExecutionItem[],
+  context: ExecutionContext,
+  retry: NodeRetryConfig = {}
+): Promise<ExecutionItem[][]> {
+  const maxAttempts = retry.max_attempts ?? 1;
+  const delayMs = retry.delay_ms ?? 1000;
+  const backoff = retry.backoff ?? 'linear';
+  
+  let lastError: Error | undefined;
+  
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await executor.execute(config, input, context);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      
+      if (attempt < maxAttempts) {
+        const wait = backoff === 'exponential' 
+          ? delayMs * Math.pow(2, attempt - 1)
+          : delayMs * attempt;
+        console.warn(`[runner] node retry ${attempt}/${maxAttempts}, waiting ${wait}ms...`);
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
+    }
+  }
+  
+  throw lastError!;
+}
 
 // Registry of all node executors
 const NODE_EXECUTORS: Record<string, NodeExecutor> = {
@@ -118,7 +153,7 @@ export class WorkflowRunner {
           const executor = NODE_EXECUTORS[node.type];
           if (!executor) throw new Error(`Unknown node type: ${node.type}`);
           
-          outputs = await executor.execute(node.config, input, context);
+          outputs = await executeWithRetry(executor, node.config, input, context, node.retry);
           
           // For 'respond' nodes, capture the response payload
           if (node.type === 'respond' && synchronous) {
