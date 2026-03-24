@@ -1,0 +1,14 @@
+{
+  "id": "example",
+  "name": "Example Workflow",
+  "description": "Test workflow for validating the loader",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "code",
+      "name": "Trigger",
+      "config": { "code": "return [{ json: { ...$json, loaded: true } }];" }
+    }
+  ],
+  "edges": []
+}
