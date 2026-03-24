@@ -1,0 +1,86 @@
+{
+  "id": "tender-stage3-evaluation",
+  "name": "Stage 3: Tender Evaluation",
+  "description": "Loads requirements and real company profile from Supabase, calls xAI to evaluate fit, saves score and recommendation.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "code",
+      "name": "Trigger Input",
+      "config": { "code": "const body = $json.body || $json;\nreturn [{ json: { tender_id: body.tender_id } }];" }
+    },
+    {
+      "id": "load-requirements",
+      "type": "supabase.query",
+      "name": "Load Requirements",
+      "config": {
+        "table": "tenders",
+        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.tender_id }}" }],
+        "single": true
+      }
+    },
+    {
+      "id": "load-company-profile",
+      "type": "supabase.query",
+      "name": "Load Company Profile",
+      "config": {
+        "table": "company_profiles",
+        "filters": [{ "column": "org_id", "operator": "eq", "value": "{{ $('load-requirements').first().json.org_id }}" }],
+        "single": true
+      }
+    },
+    {
+      "id": "prepare-context",
+      "type": "code",
+      "name": "Prepare Eval Context",
+      "config": {
+        "code": "const tender = $('load-requirements').first().json;\nconst profile = $('load-company-profile').first().json || {};\n\n// Build company profile object for LLM\nconst companyProfile = {\n  name: profile.company_name || 'Unbekanntes Unternehmen',\n  capabilities_summary: profile.capabilities_summary || '',\n  certifications: profile.certifications || [],\n  trades: profile.trades || [],\n  regions: profile.regions || [],\n  service_types: profile.service_types || [],\n  project_references: profile.project_references || []\n};\n\nconst requirements = tender.requirements || [];\n\nreturn [{ json: {\n  tender_id: tender.id,\n  company_profile: companyProfile,\n  requirements,\n  requirements_json: JSON.stringify(requirements)\n} }];"
+      }
+    },
+    {
+      "id": "evaluate-llm",
+      "type": "http_request",
+      "name": "Evaluate Requirements LLM",
+      "config": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_type": "bearer",
+        "auth_value": "{{ process.env.XAI_API_KEY }}",
+        "body": "{{ JSON.stringify({ model: 'grok-3', messages: [{ role: 'system', content: 'You are a Senior Bid Manager. Evaluate the Tender Requirements against the Company Profile.\\n\\n### 1. EVALUATION LOGIC\\n**A. Status Definitions**\\n- **compliant**: Profile explicitly demonstrates capability, cert, or history.\\n- **partial**: Intent met but lacks specific evidence, minor deviation, or functional alternative.\\n- **not_met**: Capability/cert/financial standing clearly missing.\\n\\n**B. Boolean \"is_blocking\"**\\nSet to TRUE if:\\n1. Requirement is \"is_critical\": true AND status is \"not_met\".\\n2. Fails mandatory Pass/Fail criteria (turnover, licenses, legal).\\n3. Legal/Operational impossibility.\\n\\n**C. Strategic Fit Score (0-100)**\\n- **90-100:** Perfect fit. Core business, high advantage, high margin.\\n- **70-89:** Strong fit. Good match, minor gaps.\\n- **40-69:** Marginal. Operationally stretched or commodity service.\\n- **0-39:** Poor. Outside core region/skills, high risk.\\n\\n**D. Bid Recommendation**\\n- **recommend_no_bid**: IF (is_blocking == true) OR (Score < 40).\\n- **needs_review**: IF (partial > 20% of reqs) OR (Score 40-70) OR (High Severity Risks).\\n- **recommend_bid**: IF (No blocking) AND (Score > 70) AND (Risks == Low/Medium).\\n\\n### 3. OUTPUT SCHEMA\\nRespond ONLY with valid JSON:\\n{\"strategic_fit_score\":0,\"bid_recommendation\":\"recommend_bid|needs_review|recommend_no_bid\",\"eligibility_summary\":{\"compliant_count\":0,\"partial_count\":0,\"not_met_count\":0,\"blocking_issues\":0},\"eligibility_requirements\":[{\"id\":\"string\",\"status\":\"compliant|partial|not_met\",\"is_blocking\":false}],\"risks\":[{\"id\":\"string\",\"text\":\"string\",\"severity\":\"low|medium|high\"}],\"clarifications\":[{\"id\":\"string\",\"question\":\"string\"}]}' }, { role: 'user', content: 'PROFILE: ' + JSON.stringify($json.company_profile) + '\\nREQUIREMENTS: ' + $json.requirements_json }], temperature: 0, response_format: { type: 'json_object' } }) }}"
+      }
+    },
+    {
+      "id": "parse-evaluation",
+      "type": "code",
+      "name": "Parse Evaluation",
+      "config": {
+        "code": "const tenderId = $('load-requirements').first().json.id;\nlet evaluation;\ntry {\n  const content = $json.choices[0].message.content;\n  evaluation = typeof content === 'string' ? JSON.parse(content.replace(/```json|```/g, '').trim()) : content;\n} catch(e) {\n  evaluation = { strategic_fit_score: 0, bid_recommendation: 'needs_review', eligibility_summary: { compliant_count: 0, partial_count: 0, not_met_count: 0, blocking_issues: 0 }, eligibility_requirements: [], risks: [], clarifications: [] };\n}\nreturn [{ json: {\n  id: tenderId,\n  strategic_fit_score: evaluation.strategic_fit_score,\n  bid_recommendation: evaluation.bid_recommendation,\n  eligibility_summary: evaluation.eligibility_summary,\n  eligibility_requirements: evaluation.eligibility_requirements,\n  risks: evaluation.risks,\n  clarifications: evaluation.clarifications,\n  processing_status: 'complete'\n} }];"
+      }
+    },
+    {
+      "id": "save-evaluation",
+      "type": "supabase.update",
+      "name": "Save Evaluation",
+      "config": {
+        "table": "tenders",
+        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.id }}" }],
+        "data": "auto_map"
+      }
+    },
+    {
+      "id": "respond",
+      "type": "respond",
+      "name": "Return Evaluation",
+      "config": { "status_code": 200 }
+    }
+  ],
+  "edges": [
+    { "from": "trigger", "from_output": 0, "to": "load-requirements" },
+    { "from": "load-requirements", "from_output": 0, "to": "load-company-profile" },
+    { "from": "load-company-profile", "from_output": 0, "to": "prepare-context" },
+    { "from": "prepare-context", "from_output": 0, "to": "evaluate-llm" },
+    { "from": "evaluate-llm", "from_output": 0, "to": "parse-evaluation" },
+    { "from": "parse-evaluation", "from_output": 0, "to": "save-evaluation" },
+    { "from": "save-evaluation", "from_output": 0, "to": "respond" }
+  ]
+}
