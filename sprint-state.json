@@ -4,7 +4,7 @@
   "repo": "silclawww/flowtender",
   "started_at": "2026-03-24T06:20:00Z",
   "target_duration_hours": 8,
-  "cron_job_id": null,
+  "cron_job_id": "b75df131-3762-4733-a4c4-17b7ba6b2000",
   "status": "in_progress",
   "max_concurrent_subagents": 4,
   "wave_count": 0,
@@ -74,7 +74,9 @@
         "Tables flow_executions and flow_node_runs exist in Supabase",
         "npm run build passes"
       ],
-      "depends_on": [0],
+      "depends_on": [
+        0
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -93,7 +95,9 @@
         "workflows/ directory created with README.md",
         "TypeScript compiles (npm run build passes)"
       ],
-      "depends_on": [0],
+      "depends_on": [
+        0
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -114,7 +118,9 @@
         "Error caught and returned in output",
         "TypeScript compiles"
       ],
-      "depends_on": [0],
+      "depends_on": [
+        0
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -135,7 +141,9 @@
         "429 auto-retry works",
         "TypeScript compiles"
       ],
-      "depends_on": [0],
+      "depends_on": [
+        0
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -155,7 +163,10 @@
         "Template expressions work in filters and data",
         "TypeScript compiles"
       ],
-      "depends_on": [0, 1],
+      "depends_on": [
+        0,
+        1
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -175,7 +186,9 @@
         "if routes to 0 or 1 correctly",
         "TypeScript compiles"
       ],
-      "depends_on": [0],
+      "depends_on": [
+        0
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -197,7 +210,14 @@
         "Synchronous mode returns captured respond-node payload",
         "TypeScript compiles"
       ],
-      "depends_on": [1, 2, 3, 4, 5, 6],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -217,7 +237,9 @@
         "Bearer auth check works",
         "npm run build passes"
       ],
-      "depends_on": [7],
+      "depends_on": [
+        7
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -238,7 +260,9 @@
         "Code node includes serializeGaebText logic",
         "File parseable by WorkflowLoader"
       ],
-      "depends_on": [2],
+      "depends_on": [
+        2
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -259,7 +283,9 @@
         "Uses tender_id from trigger payload",
         "File parseable"
       ],
-      "depends_on": [2],
+      "depends_on": [
+        2
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -280,7 +306,9 @@
         "Sets processing_status correctly",
         "File parseable"
       ],
-      "depends_on": [2],
+      "depends_on": [
+        2
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -301,7 +329,9 @@
         "Same output schema as n8n (strategic_fit_score, bid_recommendation, etc.)",
         "File parseable"
       ],
-      "depends_on": [2],
+      "depends_on": [
+        2
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -322,7 +352,10 @@
         "Runs workflow via WorkflowRunner",
         "npm run build passes"
       ],
-      "depends_on": [7, 8],
+      "depends_on": [
+        7,
+        8
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -343,7 +376,9 @@
         "Auto-refreshes when executions are running",
         "npm run build passes"
       ],
-      "depends_on": [1],
+      "depends_on": [
+        1
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -365,7 +400,10 @@
         "Auto-polls during active execution",
         "npm run build passes"
       ],
-      "depends_on": [8, 14],
+      "depends_on": [
+        8,
+        14
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -385,7 +423,9 @@
         "Fallback if flowtender unreachable",
         "Build passes in tenderly-agent"
       ],
-      "depends_on": [13],
+      "depends_on": [
+        13
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -405,7 +445,9 @@
         "Fallback to n8n if env var not set",
         "Tenderly build passes"
       ],
-      "depends_on": [13],
+      "depends_on": [
+        13
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -426,7 +468,11 @@
         "curl http://localhost:3845/api/flow/executions returns JSON",
         "pm2 list shows flowtender online"
       ],
-      "depends_on": [8, 13, 14],
+      "depends_on": [
+        8,
+        13,
+        14
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -447,7 +493,11 @@
         "Tenders list at /tenders shows the new tender",
         "Test report written"
       ],
-      "depends_on": [16, 17, 18],
+      "depends_on": [
+        16,
+        17,
+        18
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -466,7 +516,9 @@
         "summary field written to tenders table",
         "Build passes"
       ],
-      "depends_on": [11],
+      "depends_on": [
+        11
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -486,7 +538,9 @@
         "New execution created on retry",
         "Build passes"
       ],
-      "depends_on": [15],
+      "depends_on": [
+        15
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -506,7 +560,9 @@
         "Workflow shape matches the JSON definition",
         "Build passes"
       ],
-      "depends_on": [15],
+      "depends_on": [
+        15
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -525,7 +581,9 @@
         "npm run build passes",
         "require('pdf-parse') works from code executor"
       ],
-      "depends_on": [3],
+      "depends_on": [
+        3
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
@@ -544,7 +602,9 @@
         "Can call the GAEB parser from flowtender",
         "TypeScript compiles"
       ],
-      "depends_on": [3],
+      "depends_on": [
+        3
+      ],
       "status": "pending",
       "assigned_to": null,
       "started_at": null,
