@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   experimental: {
     proxyClientMaxBodySize: 52428800, // 50 MB
   },
+  turbopack: {
+    root: process.cwd(),
+  },
   async headers() {
     return [
       {
