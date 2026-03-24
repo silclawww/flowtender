@@ -1,16 +1,20 @@
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
 import * as path from 'path';
 
-// Path to Tenderly GAEB parser (shared filesystem)
-const GAEB_PARSER_PATH = path.join(
-  process.cwd(),
-  '../tenderly-agent/lib/gaeb-parser-n8n.js'
-);
+// Returns the path to Tenderly GAEB parser at runtime (not build time)
+// This must be a function to avoid Turbopack static analysis
+function getGaebParserPath(): string {
+  return path.join(process.cwd(), '../tenderly-agent/lib/gaeb-parser-n8n.js');
+}
 
 export interface GaebParseConfig {
   file_data_field?: string;  // field name containing base64 file data (default: 'file_data')
   file_name_field?: string;  // field name containing the filename (default: 'file_name')
 }
+
+// Dynamic require that bypasses Turbopack static analysis
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const dynamicRequire = new Function('path', 'return require(path)') as (path: string) => unknown;
 
 export const gaebParseExecutor: NodeExecutor = {
   async execute(config, input) {
@@ -25,14 +29,14 @@ export const gaebParseExecutor: NodeExecutor = {
       throw new Error(`gaeb_parse: no file data found at field '${dataField}'`);
     }
     
-    // Load the GAEB parser from Tenderly project
+    // Load the GAEB parser from Tenderly project (runtime only, not bundled)
     let parseGaebFile: (buf: Buffer, fileName: string) => unknown;
+    const parserPath = getGaebParserPath();
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const gaebModule = require(GAEB_PARSER_PATH) as { parseGaebFile: typeof parseGaebFile };
+      const gaebModule = dynamicRequire(parserPath) as { parseGaebFile: typeof parseGaebFile };
       parseGaebFile = gaebModule.parseGaebFile;
     } catch (err) {
-      throw new Error(`gaeb_parse: failed to load GAEB parser from ${GAEB_PARSER_PATH}: ${err}`);
+      throw new Error(`gaeb_parse: failed to load GAEB parser from ${parserPath}: ${err}`);
     }
     
     const buffer = Buffer.from(fileData, 'base64');
