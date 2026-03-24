@@ -55,11 +55,11 @@
         "npm run build passes"
       ],
       "depends_on": [],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:32:49.210Z",
+      "output_summary": "Types, deps, folder structure, README — commit 0047d34",
       "review_notes": null,
       "needs_retry": false
     },
@@ -77,11 +77,11 @@
       "depends_on": [
         0
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:35:17.749Z",
+      "output_summary": "Supabase clients + flow_executions/flow_node_runs tables applied; FK omitted for now",
       "review_notes": null,
       "needs_retry": false
     },
@@ -98,11 +98,11 @@
       "depends_on": [
         0
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:36:47.551Z",
+      "output_summary": "loadWorkflow/listWorkflows/validateWorkflow with path traversal protection; commit 0d4ace6",
       "review_notes": null,
       "needs_retry": false
     },
@@ -121,11 +121,11 @@
       "depends_on": [
         0
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:34:28.183Z",
+      "output_summary": "code executor with //$(nodeId) context, safe require() for crypto/util/path/zlib",
       "review_notes": null,
       "needs_retry": false
     },
@@ -144,11 +144,11 @@
       "depends_on": [
         0
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:34:06.562Z",
+      "output_summary": "Already committed in task 0 scaffold. Build passes.",
       "review_notes": null,
       "needs_retry": false
     },
@@ -167,11 +167,11 @@
         0,
         1
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:38:34.643Z",
+      "output_summary": "query/upsert/update executors with template eval; as-any casts for Supabase generics",
       "review_notes": null,
       "needs_retry": false
     },
@@ -189,11 +189,11 @@
       "depends_on": [
         0
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:36:10.182Z",
+      "output_summary": "switch/if/wait/respond executors with evalCondition helper",
       "review_notes": null,
       "needs_retry": false
     },
@@ -218,11 +218,11 @@
         5,
         6
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:42:58.349Z",
+      "output_summary": "BFS topological runner, Supabase logging, timeout handling, respond-node payload capture",
       "review_notes": null,
       "needs_retry": false
     },
@@ -240,11 +240,11 @@
       "depends_on": [
         7
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:50:38.196Z",
+      "output_summary": "HTTP trigger + turbopack.root fix; status/retry routes already existed",
       "review_notes": null,
       "needs_retry": false
     },
@@ -263,11 +263,11 @@
       "depends_on": [
         2
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:40:20.923Z",
+      "output_summary": "Stage 1 GAEB workflow: trigger→normalise→save→respond, uses payload tender_id",
       "review_notes": null,
       "needs_retry": false
     },
@@ -286,11 +286,11 @@
       "depends_on": [
         2
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:41:37.622Z",
+      "output_summary": "pdf-parse API corrected; http-request.ts patched to expose process.env in templates",
       "review_notes": null,
       "needs_retry": false
     },
@@ -309,11 +309,11 @@
       "depends_on": [
         2
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:42:20.042Z",
+      "output_summary": "Stage 2 requirements workflow, exact n8n prompt preserved; commit a72407a",
       "review_notes": null,
       "needs_retry": false
     },
@@ -332,11 +332,11 @@
       "depends_on": [
         2
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:43:52.414Z",
+      "output_summary": "Stage 3 eval workflow; real Supabase company profile via org_id; full n8n prompt preserved",
       "review_notes": null,
       "needs_retry": false
     },
@@ -356,11 +356,11 @@
         7,
         8
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:48:22.600Z",
+      "output_summary": "Webhook routing done; gaeb.ts Turbopack fix; OOM on full build under memory pressure",
       "review_notes": null,
       "needs_retry": false
     },
@@ -379,11 +379,11 @@
       "depends_on": [
         1
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:39:26.214Z",
+      "output_summary": "Executions list page + API, auto-refresh, zinc/slate design; commit 8dd62d2",
       "review_notes": null,
       "needs_retry": false
     },
@@ -473,11 +473,11 @@
         13,
         14
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:50:38.197Z",
+      "output_summary": "flowtender running on port 3845 via PM2 (id:5); ecosystem.config.js written; curl confirmed 200",
       "review_notes": null,
       "needs_retry": false
     },
@@ -519,11 +519,11 @@
       "depends_on": [
         11
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:44:33.105Z",
+      "output_summary": "Summary generation added to Stage 2, grok-3-mini, saves to summary column",
       "review_notes": null,
       "needs_retry": false
     },
@@ -584,11 +584,11 @@
       "depends_on": [
         3
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:37:36.694Z",
+      "output_summary": "pdf-parse + @types/pdf-parse installed, added to ALLOWED_MODULES",
       "review_notes": null,
       "needs_retry": false
     },
@@ -605,11 +605,11 @@
       "depends_on": [
         3
       ],
-      "status": "pending",
+      "status": "done",
       "assigned_to": null,
       "started_at": null,
-      "completed_at": null,
-      "output_summary": null,
+      "completed_at": "2026-03-24T06:45:37.236Z",
+      "output_summary": "gaeb_parse executor bridges to Tenderly GAEB parser; registered in NODE_EXECUTORS in runner.ts",
       "review_notes": null,
       "needs_retry": false
     }
