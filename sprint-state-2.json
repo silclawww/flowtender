@@ -1,0 +1,150 @@
+{
+  "sprint_id": "sprint-20260324-0815",
+  "objective": "Sprint 2: Fix all user-facing bugs from sprint 1. Key deliverables: (1) /tenders list shows recently uploaded tenders — fix sort/filter logic, (2) deadline extracted and displayed, (3) Stage 2/3 pipeline completes — summary + requirements visible in TenderDetail, (4) Two requirement types: Type 1 GAEB Leistungsverzeichnis shown separately from Type 2 eligibility/implicit requirements (LLM-extracted), (5) flowtender inspector enhanced with full I/O views and better debugging, (6) full n8n deprecation — all active paths go through flowtender.",
+  "repo": "silclawww/flowtender",
+  "tenderly_repo": "silclawww/tenderly-agent",
+  "started_at": "2026-03-24T08:15:00Z",
+  "target_duration_hours": 6,
+  "cron_job_id": "b75df131-3762-4733-a4c4-17b7ba6b2000",
+  "status": "running",
+  "max_concurrent_subagents": 4,
+  "architecture_decision": "Full n8n deprecation: flowtender IS the n8n replacement. All 3 pipeline stages run natively. n8n fallback code remains but FLOWTENDER_ENABLED=true is permanent. flowtender becomes a lightweight visual workflow engine with: (a) JSON workflow defs editable via git/CLI, (b) visual Mermaid diagram per execution, (c) full I/O per node for debugging, (d) CLI entrypoint for Sil to trigger/inspect runs.",
+  "tasks": [
+    {
+      "id": "S2-01",
+      "name": "Fix /tenders sort — default to created_at desc; tiebreak by date when deadline null",
+      "priority": "critical",
+      "status": "done",
+      "description": "In Tenderly app/tenders/page.tsx: (1) Change default sort state from 'deadline' to 'date'. (2) Fix the sort comparator to not produce NaN: when deadline is null use created_at as fallback key. Also fix the deadline sort to use created_at as stable tiebreaker. This ensures newest uploaded tenders always appear first by default. Build + restart Tenderly PM2.",
+      "files": [
+        "tenderly-agent/app/tenders/page.tsx"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:26:00.104Z",
+      "output_summary": "Default sort changed to date, stable comparator, commit 83dbfd05"
+    },
+    {
+      "id": "S2-02",
+      "name": "Fix deadline extraction — parse from GAEB metadata + LLM for PDF",
+      "priority": "critical",
+      "status": "done",
+      "description": "Deadline comes from two sources: (a) PDF 211 form — already extracted by extract-tender-data.ts as angebotsfrist_datum, needs to be stored in the deadline column (YYYY-MM-DD); (b) GAEB files — check if award_deadline or similar field exists in parsed GAEB JSON. Update flowtender Stage 1 GAEB normalise node to extract deadline from GAEB metadata if available. Update extract-tender-data.ts to ensure deadline is stored. Verify deadline appears in TenderCard.",
+      "files": [
+        "tenderly-agent/lib/extract-tender-data.ts",
+        "flowtender/workflows/tender-stage1-gaeb.json"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:25:08.969Z",
+      "output_summary": "PDF 211 deadline already working via parseDateDE(); GAEB has no deadline by spec"
+    },
+    {
+      "id": "S2-03",
+      "name": "Debug + fix Stage 2/3 pipeline — trace respond node output, ensure fields persist",
+      "priority": "critical",
+      "status": "done",
+      "description": "The store's fetchDetails reads rawItem.requirements, rawItem.summary from the flowtender Stage 2 response. Verify: (1) the Stage 2 respond node actually returns the right shape, (2) the /api/tender/details/route.ts forwards the full response. If the supabase.update executor returns empty or truncated data, fix the Stage 2 workflow so the respond node returns the actual processed data (requirements + summary), not just the DB update result. Test end-to-end with the real test file. Check PM2 logs for Stage 2/3 calls.",
+      "files": [
+        "flowtender/workflows/tender-stage2-requirements.json",
+        "flowtender/lib/nodes/supabase.ts",
+        "tenderly-agent/app/api/tender/details/route.ts"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:28:03.803Z",
+      "output_summary": "Verified via S2-07 live test — Stage 2 returns correct structure"
+    },
+    {
+      "id": "S2-04",
+      "name": "Two requirement types: separate Type 1 (GAEB LV) from Type 2 (eligibility/implicit)",
+      "priority": "high",
+      "status": "pending",
+      "description": "Type 1: GAEB Leistungsverzeichnis items (already parsed, no LLM). These are the bill-of-quantities entries. They should appear as a separate section 'Leistungsverzeichnis' in TenderDetail — showing the top-level categories and item count, NOT passed through LLM. Type 2: Eligibility + operational requirements extracted from PDF documents (211/213/216) via LLM — certifications needed, safety measures, equipment (Hubwagen, etc.), insurance minimums. These are NOT the LV items. Update Stage 2 workflow LLM prompt to ONLY extract Type 2 requirements. Add a new DB column or use existing requirements JSONB for this. Update TenderDetail to show both sections separately.",
+      "files": [
+        "flowtender/workflows/tender-stage2-requirements.json",
+        "tenderly-agent/app/tenders/[id]/page.tsx"
+      ],
+      "depends_on": [
+        "S2-03"
+      ]
+    },
+    {
+      "id": "S2-05",
+      "name": "flowtender inspector: enhanced I/O viewer + execution debug view",
+      "priority": "high",
+      "status": "done",
+      "description": "The current execution detail page shows per-node I/O as JSON. Sil wants better debugging visibility. Enhancements: (1) Show full raw JSON without truncation in expandable sections, (2) add a 'Re-run this node' button concept (just display for now), (3) add workflow run stats at top (total nodes, pass/fail counts, total duration), (4) make the execution list page show tender title and workflow name more prominently, (5) add a search/filter on executions list by status and workflow_id. Build + restart flowtender PM2.",
+      "files": [
+        "flowtender/app/page.tsx",
+        "flowtender/app/execution/[id]/page.tsx"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:31:37.278Z",
+      "output_summary": "Filters, colorized JSON, stats bar, /workflows page, nav links to Tenderly"
+    },
+    {
+      "id": "S2-06",
+      "name": "Remove all active n8n code paths — make flowtender the single pipeline",
+      "priority": "high",
+      "status": "done",
+      "description": "Audit all n8n references in tenderly-agent. The upload route and API routes now have FLOWTENDER_ENABLED flag, but the fallback n8n code is dead weight. For clarity: (1) Remove the N8N_WEBHOOK_URL fallback from upload route, details route, evaluation route — make flowtender the only path. If flowtender is down, return 503 with clear error (not silent fallback to broken n8n). (2) Remove all N8N_ env var references. (3) Document in comments that flowtender is permanent. Build + restart.",
+      "files": [
+        "tenderly-agent/app/api/upload/route.ts",
+        "tenderly-agent/app/api/tender/details/route.ts",
+        "tenderly-agent/app/api/tender/evaluation/route.ts"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:23:48.230Z"
+    },
+    {
+      "id": "S2-07",
+      "name": "Stage 2: fix respond node to return structured data for store",
+      "priority": "critical",
+      "status": "done",
+      "description": "The Stage 2 workflow's respond node needs to return the data that fetchDetails in the store expects. Current flow: ... → save-requirements (supabase.update) → respond. The supabase.update result might not have the right shape. Fix: add a final code node BEFORE respond that explicitly builds the response: { id, requirements, summary, processing_status, execution_start, execution_end }. Same for Stage 3: the respond node should return { strategic_fit_score, bid_recommendation, eligibility_summary, eligibility_requirements, risks, clarifications, processing_status }. Verify with curl test.",
+      "files": [
+        "flowtender/workflows/tender-stage2-requirements.json",
+        "flowtender/workflows/tender-stage3-evaluation.json"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:28:03.803Z",
+      "output_summary": "build-response nodes added; Stage 2 tested live: 2 requirements + summary returned OK"
+    },
+    {
+      "id": "S2-08",
+      "name": "Verify PDF text extraction is happening and visible in flowtender",
+      "priority": "medium",
+      "status": "done",
+      "description": "Check: (1) Is extractPdfTexts() being called in the upload route? Verify in upload route source. (2) Is pdf_text being populated in the tenders table for GAEB uploads? (The Stage 1 GAEB normalise node serializes gaeb text to pdf_text). (3) For PDF uploads, is pdf_text populated from the actual PDF extraction? (4) Check pm2 logs for upload calls. (5) Run a test upload and trace what's in the DB. Document findings. Fix any gaps found.",
+      "files": [
+        "tenderly-agent/app/api/upload/route.ts",
+        "flowtender/workflows/tender-stage1-pdf.json"
+      ],
+      "depends_on": [],
+      "completed_at": "2026-03-24T08:32:29.484Z",
+      "output_summary": "pdf_texts_extracted was never populated — fixed; now saved from extractAndPersistTenderData()"
+    },
+    {
+      "id": "S2-09",
+      "name": "TenderDetail: summary section — always show if populated, fix disappearing skeleton",
+      "priority": "high",
+      "status": "done",
+      "description": "The TenderDetail shows skeletons while processing but they disappear. Root cause: when Stage 2 completes and updates processingStatus to details_ready, the component rerenders but if summary/requirements are not in the store update, they remain undefined. Fix: (1) After fetchDetails completes, ensure summary is set on the store. (2) Show summary section ALWAYS if summary is non-empty, regardless of processingStatus. (3) Add a visible fallback 'Zusammenfassung wird erstellt...' when processing and no summary yet. (4) TenderDetail should re-fetch the full tender from DB after Stage 2/3 complete to get all fields including those written by flowtender.",
+      "files": [
+        "tenderly-agent/app/tenders/[id]/page.tsx",
+        "tenderly-agent/lib/store.ts"
+      ],
+      "depends_on": [
+        "S2-03",
+        "S2-07"
+      ],
+      "completed_at": "2026-03-24T08:33:54.759Z",
+      "output_summary": "Section always renders; state-based content: skeleton/loading/summary/fallback; 500ms re-fetch after Stage 2/3"
+    },
+    {
+      "id": "S2-CLI",
+      "name": "CLI + tenders auto-refresh",
+      "status": "done",
+      "completed_at": "2026-03-24T08:38:17.205Z",
+      "output_summary": "CLI: 5 commands working; tenders 5s auto-refresh + Loader2 spinner"
+    }
+  ]
+}

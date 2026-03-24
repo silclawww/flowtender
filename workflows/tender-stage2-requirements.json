@@ -1,7 +1,7 @@
 {
   "id": "tender-stage2-requirements",
   "name": "Stage 2: Requirements Extraction",
-  "description": "Loads tender pdf_text from Supabase, calls xAI to extract structured requirements, saves them back.",
+  "description": "Loads tender pdf_texts_extracted from Supabase, calls xAI to extract structured requirements, saves them back.",
   "nodes": [
     {
       "id": "trigger",
@@ -30,6 +30,14 @@
       }
     },
     {
+      "id": "prepare-extraction-text",
+      "type": "code",
+      "name": "Prepare Extraction Text",
+      "config": {
+        "code": "// Use pdf_texts_extracted (actual PDF docs with requirements) instead of pdf_text (GAEB BoQ)\nconst tender = $('load-tender').first().json;\nconst pdfTexts = tender.pdf_texts_extracted;\nlet extractionText = '';\nif (pdfTexts) {\n  if (Array.isArray(pdfTexts)) {\n    extractionText = pdfTexts.map((t, i) => '=== Dokument ' + (i+1) + ' ===\\n' + (t || '')).join('\\n\\n').slice(0, 8000);\n  } else if (typeof pdfTexts === 'object') {\n    extractionText = Object.entries(pdfTexts).map(([k, v]) => '=== ' + k + ' ===\\n' + (v || '')).join('\\n\\n').slice(0, 8000);\n  } else {\n    extractionText = String(pdfTexts).slice(0, 8000);\n  }\n}\nif (!extractionText && tender.pdf_text) {\n  // Fallback to GAEB BoQ text if no extracted PDFs available\n  extractionText = tender.pdf_text.slice(0, 8000);\n}\nreturn [{ json: { ...tender, extraction_text: extractionText } }];"
+      }
+    },
+    {
       "id": "extract-requirements-llm",
       "type": "http_request",
       "name": "Extract Requirements LLM",
@@ -38,7 +46,7 @@
         "url": "https://api.x.ai/v1/chat/completions",
         "auth_type": "bearer",
         "auth_value": "{{ process.env.XAI_API_KEY }}",
-        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Your task is to extract all material requirements from a tender document and categorise them. The answer must be in the same language as the tender document is written and must sound natural but concise. A requirement is a contractually or technically significant obligation, condition, deliverable, performance criterion, compliance requirement, or eligibility expectation that would materially affect bidding, delivery, risk, cost, or evaluation. The Tender Document can include standard clauses with general rules that are not related to specific tender delivery, sometimes having a big share of the overall document. Ignore those and focus on the actual tender task. Another part of the document often is a long list of items required for delivery. Do not reproduce items in your answer but infer what is built and what is the high level description of that thing and make it the requirement (or multiple requirements if needed). CRITICAL EXTRACTION RULES: Do NOT extract procedural or administrative noise. OUTPUT REQUIREMENTS: - Return ONLY valid JSON. - Use the following schema exactly: {\"requirements\":[{\"id\":\"REQ-001\",\"category\":\"Technical | Commercial | Legal | Operational | HSE | Quality | Eligibility | Other\",\"title\":\"action task related\",\"description\":\"\",\"is_critical\":true,\"source_fragments\":[]}]}' }, { role: 'user', content: $('load-tender').first().json.pdf_text || '' }], temperature: 0 }) }}"
+        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen in Deutschland. Analysiere den folgenden Text und extrahiere AUSSCHLIESSLICH Eignungs- und operative Anforderungen (KEINE Leistungspositionen aus dem Leistungsverzeichnis!).\\n\\nEignungs- und operative Anforderungen umfassen:\\n- Nachweise und Zertifizierungen (ISO 9001, DGUV, Entsorgungsnachweise, etc.)\\n- Versicherungsnachweise (Betriebs-Haftpflicht, etc.) mit Mindestdeckungssummen\\n- Referenzprojekte (Anzahl, Art, Mindestumsatz)\\n- Personalqualifikationen (Meister, Sachkundiger, etc.)\\n- Geräte und Ausrüstung (Hubarbeitsbühne, Spezialfahrzeuge, etc.)\\n- Sicherheitsmaßnahmen und Auflagen\\n- Finanzielle Anforderungen (Mindestumsatz, Bankbürgschaft)\\n- Gesellschaftsrechtliche Anforderungen\\n\\nNICHT extrahieren: Einzelpositionen des Leistungsverzeichnisses, Mengen, Einheitspreise, Ausführungsfristen aus dem LV.\\n\\nAntworte NUR mit einem JSON-Array. Jedes Objekt hat diese Felder:\\n{\\n  \"id\": \"REQ-001\",\\n  \"category\": \"Zertifizierung|Versicherung|Referenz|Personal|Ausrüstung|Sicherheit|Finanziell|Sonstiges\",\\n  \"title\": \"Kurztitel der Anforderung (max 60 Zeichen)\",\\n  \"description\": \"Vollständige Anforderungsbeschreibung\",\\n  \"is_critical\": true,\\n  \"source_fragments\": [\"Auszug aus dem Ausschreibungstext\"]\\n}' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text || '' }], temperature: 0 }) }}"
       },
       "retry": { "max_attempts": 3, "delay_ms": 2000, "backoff": "exponential" }
     },
@@ -47,7 +55,7 @@
       "type": "code",
       "name": "Parse Requirements",
       "config": {
-        "code": "const content = $json.choices[0].message.content;\nlet requirements = [];\ntry {\n  const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  requirements = parsed.requirements || [];\n} catch (e) {\n  console.error('Failed to parse requirements:', e);\n}\nreturn [{ json: { requirements } }];"
+        "code": "const content = $json.choices[0].message.content;\nlet requirements = [];\ntry {\n  const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  // Handle both array (new format) and object with requirements key (legacy)\n  requirements = Array.isArray(parsed) ? parsed : (parsed.requirements || []);\n} catch (e) {\n  console.error('Failed to parse requirements:', e);\n}\nreturn [{ json: { requirements } }];"
       }
     },
     {
@@ -59,7 +67,7 @@
         "url": "https://api.x.ai/v1/chat/completions",
         "auth_type": "bearer",
         "auth_value": "{{ process.env.XAI_API_KEY }}",
-        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Erstelle eine prägnante Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen. Keine Auflistung von Anforderungen. Antworte NUR mit dem Zusammenfassungstext, ohne JSON oder Formatierung.' }, { role: 'user', content: $('load-tender').first().json.pdf_text ? $('load-tender').first().json.pdf_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
+        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Erstelle eine prägnante Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen. Keine Auflistung von Anforderungen. Antworte NUR mit dem Zusammenfassungstext, ohne JSON oder Formatierung.' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text ? $('prepare-extraction-text').first().json.extraction_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
       },
       "retry": { "max_attempts": 3, "delay_ms": 2000, "backoff": "exponential" }
     },
@@ -99,7 +107,8 @@
   "edges": [
     { "from": "trigger", "from_output": 0, "to": "load-tender" },
     { "from": "load-tender", "from_output": 0, "to": "set-status" },
-    { "from": "set-status", "from_output": 0, "to": "extract-requirements-llm" },
+    { "from": "set-status", "from_output": 0, "to": "prepare-extraction-text" },
+    { "from": "prepare-extraction-text", "from_output": 0, "to": "extract-requirements-llm" },
     { "from": "extract-requirements-llm", "from_output": 0, "to": "parse-requirements" },
     { "from": "parse-requirements", "from_output": 0, "to": "generate-summary" },
     { "from": "generate-summary", "from_output": 0, "to": "parse-summary" },
