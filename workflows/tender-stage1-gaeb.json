@@ -7,14 +7,16 @@
       "id": "trigger",
       "type": "code",
       "name": "Trigger Input",
-      "config": { "code": "return [{ json: $json }];" }
+      "config": {
+        "code": "return [{ json: $json }];"
+      }
     },
     {
       "id": "normalise",
       "type": "code",
       "name": "Normalise GAEB Output",
       "config": {
-        "code": "/* Build tender row from pre-parsed GAEB payload */\nconst input = $json;\nconst gaebFiles = input.gaeb_files || [];\n\nfunction deriveTrade(g) {\n  const entries = g?.bill_of_quantities?.entries || [];\n  for (const e of entries) {\n    if (e.type === 'item' && e.category_path?.length > 0) return e.category_path[0];\n  }\n  return null;\n}\n\nfunction dataPhase(g) {\n  const num = parseInt(g?.metadata?.data_phase, 10);\n  return isNaN(num) ? null : num;\n}\n\nfunction serializeGaebText(gaebFiles) {\n  const lines = [];\n  for (const g of gaebFiles) {\n    if (g._error) continue;\n    const proj = g.project?.label || g.project?.name || g.file;\n    const owner = g.owner?.name || g.owner?.bauherr || null;\n    lines.push('# ' + proj);\n    if (owner) lines.push('Auftraggeber: ' + owner);\n    if (g.award_no) lines.push('Vergabe-Nr.: ' + g.award_no);\n    lines.push('');\n    for (const block of (g.award_description || [])) {\n      if (block.outline) lines.push('## ' + block.outline);\n      if (block.detail) lines.push(block.detail);\n      lines.push('');\n    }\n    const entries = g.bill_of_quantities?.entries || [];\n    const seenCats = new Set();\n    let shown = 0;\n    for (const e of entries) {\n      if (e.type === 'item' && shown < 40) {\n        const catKey = (e.category_path || []).slice(0, -1).join(' > ');\n        if (catKey && !seenCats.has(catKey)) {\n          seenCats.add(catKey);\n          lines.push('\\n### ' + catKey);\n        }\n        lines.push('- [' + e.position + '] ' + (e.short_text || '') + (e.unit ? ' (' + e.quantity + ' ' + e.unit + ')' : ''));\n        if (e.long_text) lines.push('  ' + e.long_text.split('\\n')[0].slice(0, 120));\n        shown++;\n      }\n    }\n    lines.push('\\n(' + (g.bill_of_quantities?.total_items || 0) + ' Positionen gesamt)');\n  }\n  return lines.join('\\n');\n}\n\nconst primary = gaebFiles.find(g => parseInt(g?.metadata?.data_phase, 10) === 82) || gaebFiles[0] || {};\nconst totalItems = gaebFiles.reduce((s, g) => s + (g.bill_of_quantities?.total_items || 0), 0);\n\n// Extract top-level LV positions for Type 1 display\nconst gaebPositions = gaebFiles.flatMap(g => {\n  if (g._error) return [];\n  const entries = g.bill_of_quantities?.entries || [];\n  return entries\n    .filter(e => e.type === 'item')\n    .slice(0, 200)\n    .map(e => ({\n      id: e.position || e.id || '',\n      short_text: e.short_text || '',\n      long_text: (e.long_text || '').slice(0, 200),\n      quantity: e.quantity || null,\n      unit: e.unit || null,\n      category_path: e.category_path || [],\n      gaeb_phase: parseInt(g.metadata?.data_phase, 10) || null,\n    }));\n});\n\nreturn [{ json: {\n  id: input.tender_id,\n  org_id: input.org_id,\n  user_id: input.user_id,\n  title: primary.project?.label || primary.project?.name || input.source_filename || 'Unbekannte Ausschreibung',\n  buyer: primary.owner?.name || primary.owner?.bauherr || null,\n  region: primary.owner?.city || null,\n  trade_category: deriveTrade(primary),\n  gaeb_phase: parseInt(primary.metadata?.data_phase, 10) || null,\n  item_count: totalItems,\n  lot_count: gaebFiles.length,\n  source_type: 'gaeb',\n  source_filename: input.source_filename || '',\n  has_plans: input.has_plans || false,\n  raw_gaeb_json: gaebFiles,\n  gaeb_positions: gaebPositions,\n  pdf_text: serializeGaebText(gaebFiles),\n  processing_status: 'metadata_ready',\n  deadline: primary.metadata?.deadline || primary.metadata?.award_deadline || primary.award_deadline || null\n} }];"
+        "code": "/* Build tender row from pre-parsed GAEB payload */\nconst input = $json;\nconst gaebFiles = input.gaeb_files || [];\n\nfunction deriveTrade(g) {\n  const entries = g?.bill_of_quantities?.entries || [];\n  for (const e of entries) {\n    if (e.type === 'item' && e.category_path?.length > 0) return e.category_path[0];\n  }\n  return null;\n}\n\nfunction dataPhase(g) {\n  const num = parseInt(g?.metadata?.data_phase, 10);\n  return isNaN(num) ? null : num;\n}\n\nfunction serializeGaebText(gaebFiles) {\n  const lines = [];\n  for (const g of gaebFiles) {\n    if (g._error) continue;\n    const proj = g.project?.name || g.project?.label || g.bill_of_quantities?.label || g.bill_of_quantities?.name || (g.award_no ? 'Ausschreibung ' + g.award_no : null) || 'Leistungsverzeichnis';\n    const owner = g.owner?.name || g.owner?.bauherr || null;\n    lines.push('# ' + proj);\n    if (owner) lines.push('Auftraggeber: ' + owner);\n    if (g.award_no) lines.push('Vergabe-Nr.: ' + g.award_no);\n    lines.push('');\n    for (const block of (g.award_description || [])) {\n      if (block.outline) lines.push('## ' + block.outline);\n      if (block.detail) lines.push(block.detail);\n      lines.push('');\n    }\n    const entries = g.bill_of_quantities?.entries || [];\n    const seenCats = new Set();\n    let shown = 0;\n    for (const e of entries) {\n      if (e.type === 'item' && shown < 40) {\n        const catKey = (e.category_path || []).slice(0, -1).join(' > ');\n        if (catKey && !seenCats.has(catKey)) {\n          seenCats.add(catKey);\n          lines.push('\\n### ' + catKey);\n        }\n        lines.push('- [' + e.position + '] ' + (e.short_text || '') + (e.unit ? ' (' + e.quantity + ' ' + e.unit + ')' : ''));\n        if (e.long_text) lines.push('  ' + e.long_text.split('\\n')[0].slice(0, 120));\n        shown++;\n      }\n    }\n    lines.push('\\n(' + (g.bill_of_quantities?.total_items || 0) + ' Positionen gesamt)');\n  }\n  return lines.join('\\n');\n}\n\nconst primary = gaebFiles.find(g => parseInt(g?.metadata?.data_phase, 10) === 82) || gaebFiles[0] || {};\nconst totalItems = gaebFiles.reduce((s, g) => s + (g.bill_of_quantities?.total_items || 0), 0);\n\n// Extract top-level LV positions for Type 1 display\nconst gaebPositions = gaebFiles.flatMap(g => {\n  if (g._error) return [];\n  const entries = g.bill_of_quantities?.entries || [];\n  return entries\n    .filter(e => e.type === 'item')\n    .slice(0, 200)\n    .map(e => ({\n      id: e.position || e.id || '',\n      short_text: e.short_text || '',\n      long_text: (e.long_text || '').slice(0, 200),\n      quantity: e.quantity || null,\n      unit: e.unit || null,\n      category_path: e.category_path || [],\n      gaeb_phase: parseInt(g.metadata?.data_phase, 10) || null,\n    }));\n});\n\nreturn [{ json: {\n  id: input.tender_id,\n  org_id: input.org_id,\n  user_id: input.user_id,\n  title: primary.project?.name || primary.project?.label || primary.bill_of_quantities?.label || primary.bill_of_quantities?.name || (primary.award_no ? 'Ausschreibung ' + primary.award_no : null) || (primary.owner?.city ? 'Leistungsverzeichnis – ' + primary.owner?.city : null) || 'Leistungsverzeichnis',\n  buyer: primary.owner?.name || primary.owner?.bauherr || null,\n  region: primary.owner?.city || null,\n  trade_category: deriveTrade(primary),\n  gaeb_phase: parseInt(primary.metadata?.data_phase, 10) || null,\n  item_count: totalItems,\n  lot_count: gaebFiles.length,\n  source_type: 'gaeb',\n  source_filename: input.source_filename || '',\n  has_plans: input.has_plans || false,\n  raw_gaeb_json: gaebFiles,\n  gaeb_positions: gaebPositions,\n  pdf_text: serializeGaebText(gaebFiles),\n  processing_status: 'metadata_ready',\n  deadline: primary.metadata?.deadline || primary.metadata?.award_deadline || primary.award_deadline || null\n} }];"
       }
     },
     {
@@ -31,12 +33,26 @@
       "id": "respond",
       "type": "respond",
       "name": "Return Metadata",
-      "config": { "status_code": 200 }
+      "config": {
+        "status_code": 200
+      }
     }
   ],
   "edges": [
-    { "from": "trigger", "from_output": 0, "to": "normalise" },
-    { "from": "normalise", "from_output": 0, "to": "save" },
-    { "from": "save", "from_output": 0, "to": "respond" }
+    {
+      "from": "trigger",
+      "from_output": 0,
+      "to": "normalise"
+    },
+    {
+      "from": "normalise",
+      "from_output": 0,
+      "to": "save"
+    },
+    {
+      "from": "save",
+      "from_output": 0,
+      "to": "respond"
+    }
   ]
 }
