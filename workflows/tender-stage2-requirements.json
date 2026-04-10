@@ -7,7 +7,9 @@
       "id": "trigger",
       "type": "code",
       "name": "Trigger Input",
-      "config": { "code": "const body = $json.body || $json;\nreturn [{ json: { tender_id: body.tender_id } }];" }
+      "config": {
+        "code": "const body = $json.body || $json;\nreturn [{ json: { tender_id: body.tender_id } }];"
+      }
     },
     {
       "id": "load-tender",
@@ -15,7 +17,13 @@
       "name": "Load Tender Data",
       "config": {
         "table": "tenders",
-        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.tender_id }}" }],
+        "filters": [
+          {
+            "column": "id",
+            "operator": "eq",
+            "value": "{{ $json.tender_id }}"
+          }
+        ],
         "single": true
       }
     },
@@ -25,8 +33,16 @@
       "name": "Set Status: Extracting",
       "config": {
         "table": "tenders",
-        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $json.id }}" }],
-        "data": { "processing_status": "extracting_details" }
+        "filters": [
+          {
+            "column": "id",
+            "operator": "eq",
+            "value": "{{ $json.id }}"
+          }
+        ],
+        "data": {
+          "processing_status": "extracting_details"
+        }
       }
     },
     {
@@ -48,7 +64,11 @@
         "auth_value": "{{ process.env.XAI_API_KEY }}",
         "body": "{{ JSON.stringify({ model: 'grok-3', messages: [{ role: 'system', content: 'Du bist ein Senior-Vergaberechtexperte. Analysiere den folgenden Ausschreibungstext und extrahiere ALLE Eignungs- und operativen Anforderungen erschöpfend und lückenlos.\\n\\nWICHTIG: Extrahiere KEINE Leistungspositionen (keine Mengen, Einheitspreise, Ausführungsfristen aus dem LV).\\n\\nAnforderungstypen die du IMMER prüfen und extrahieren musst:\\n\\n1. BEFÄHIGUNGSNACHWEISE (Zulassungen, Genehmigungen, Erlaubnisse):\\n   - Meisterbetrieb, Fachbetrieb, Innungsmitglied\\n   - Schweißerlaubnis (EN ISO 3834, DIN EN ISO 9606)\\n   - Entsorgungsfachbetrieb-Zertifizierung\\n   - Sprengbefugnis, Schiesspulverlager\\n   - Aufzugswärter, Kran-/Hebebühnenführerschein (BGG 966, DGUV G 309-003)\\n\\n2. MANAGEMENTZERTIFIZIERUNGEN:\\n   - ISO 9001 (Qualitätsmanagement)\\n   - ISO 14001 (Umweltmanagement)\\n   - ISO 45001 / OHSAS 18001 (Arbeitsschutz)\\n   - SCC / SCP (Safety-Zertifikat für Auftragnehmer)\\n\\n3. VERSICHERUNGSNACHWEISE:\\n   - Betriebshaftpflicht (Mindestdeckung angeben)\\n   - Bauleistungsversicherung\\n   - Berufshaftpflicht\\n\\n4. WIRTSCHAFTLICHE ANFORDERUNGEN:\\n   - Mindestumsatz (Jahresumsatz, branchenspezifischer Umsatz)\\n   - Bilanzkennzahlen, Eigenkapitalquote\\n   - Bankbürgschaft / Sicherheitsleistung\\n   - Nicht in Insolvenz, keine schwerwiegenden beruflichen Verfehlungen\\n\\n5. TECHNISCHE KAPAZITÄT / AUSRÜSTUNG:\\n   - Hubarbeitsbühne / Hebebühne (Mindesthöhe, CE-Kennzeichnung)\\n   - Spezialfahrzeuge (LKW, Bagger, Kran)\\n   - Messgeräte, Prüfmittel\\n   - IT-Systeme (BIM-Software, CAD)\\n\\n6. PERSONALQUALIFIKATIONEN:\\n   - Bauleiter mit Berufserfahrung\\n   - Sachkundiger Planer (z.B. Rissbildung, Betoninstandsetzung)\\n   - SiGe-Koordinator (RAB 30, 31)\\n   - Brandschutzbeauftragter (DGUV I 205-003)\\n   - Elektrofachkraft, Sachverständiger\\n\\n7. REFERENZPROJEKTE:\\n   - Anzahl, Art, Mindestwert, Zeitraum\\n   - Vergleichbare Leistungen (Referenzkriterien)\\n\\n8. ARBEITSSCHUTZ & SICHERHEIT:\\n   - DGUV-Vorschriften (V1, V3, V54, V68...)\\n   - Gefährdungsbeurteilung, Sicherheitsplan\\n   - PSA (Persönliche Schutzausrüstung)\\n   - Asbestsanierung (TRGS 519), Schadstoffe\\n\\n9. TARIFLICHE ANFORDERUNGEN:\\n   - SOKA-BAU (Sozialkasse Bau)\\n   - Tariftreue, Mindestlohn\\n   - Mindestentgelttarifvertrag\\n\\n10. SONSTIGE NACHWEISE:\\n    - Handelsregisterauszug\\n    - Gewerbeanmeldung\\n    - Unbedenklichkeitsbescheinigung Finanzamt\\n    - Verzeichnis Nachunternehmer\\n    - EMAS / Umweltschutznachweis\\n\\nWICHTIGE REGEL FÜR IMPLIZITE ANFORDERUNGEN:\\nWenn die Leistung bestimmte Tätigkeiten erfordert (z.B. Arbeiten auf Dächern → Absturzsicherung, Schweißarbeiten → Schweißerlaubnis, elektrische Anlagen → VDE/Elektrofachkraft), dann füge diese Anforderungen als implizite Anforderungen mit \"is_critical\": false hinzu.\\n\\nAntworte NUR mit einem JSON-Array. Maximal 25 Anforderungen. Jedes Objekt:\\n{\\n  \"id\": \"REQ-001\",\\n  \"category\": \"Zertifizierung|Versicherung|Referenz|Personal|Ausrüstung|Sicherheit|Finanziell|Tariflich|Erlaubnis|Sonstiges\",\\n  \"title\": \"Kurztitel (max 60 Zeichen)\",\\n  \"description\": \"Vollständige Anforderungsbeschreibung inkl. Mindestanforderungen und Nachweisform\",\\n  \"is_critical\": true/false,\\n  \"is_implicit\": false/true,\\n  \"source_fragments\": [\"Relevanter Textteil\"]\\n}' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text || '' }], temperature: 0 }) }}"
       },
-      "retry": { "max_attempts": 3, "delay_ms": 2000, "backoff": "exponential" }
+      "retry": {
+        "max_attempts": 3,
+        "delay_ms": 2000,
+        "backoff": "exponential"
+      }
     },
     {
       "id": "parse-requirements",
@@ -67,16 +87,20 @@
         "url": "https://api.x.ai/v1/chat/completions",
         "auth_type": "bearer",
         "auth_value": "{{ process.env.XAI_API_KEY }}",
-        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Erstelle eine prägnante Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen. Keine Auflistung von Anforderungen. Antworte NUR mit dem Zusammenfassungstext, ohne JSON oder Formatierung.' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text ? $('prepare-extraction-text').first().json.extraction_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
+        "body": "{{ JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Antworte NUR mit validem JSON (kein Markdown, keine Erklärung) im Format: {\\\"title\\\": \\\"...\\\", \\\"summary\\\": \\\"...\\\"}. \\\"title\\\": Ein prägnanter, beschreibender Projekttitel (keine Vergabenummern, keine Codes, keine Dateinamen — beschreibender Text wie \\\"Neubau Sporthalle XYZ\\\"). \\\"summary\\\": Eine Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen.' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text ? $('prepare-extraction-text').first().json.extraction_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
       },
-      "retry": { "max_attempts": 3, "delay_ms": 2000, "backoff": "exponential" }
+      "retry": {
+        "max_attempts": 3,
+        "delay_ms": 2000,
+        "backoff": "exponential"
+      }
     },
     {
       "id": "parse-summary",
       "type": "code",
       "name": "Parse Summary",
       "config": {
-        "code": "const summaryText = $json.choices[0].message.content || '';\nconst requirements = $('parse-requirements').first().json.requirements || [];\nreturn [{ json: { requirements, summary: summaryText.trim() } }];"
+        "code": "const raw = $json.choices[0].message.content || '';\nconst requirements = $('parse-requirements').first().json.requirements || [];\n\nlet title = null;\nlet summaryText = raw.trim();\n\n// Try to parse as JSON {title, summary}\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  if (parsed.title) title = parsed.title.trim();\n  if (parsed.summary) summaryText = parsed.summary.trim();\n} catch {\n  // Model returned plain text — use as summary, no title update\n}\n\nreturn [{ json: { requirements, summary: summaryText, ai_title: title } }];"
       }
     },
     {
@@ -85,8 +109,14 @@
       "name": "Save Requirements",
       "config": {
         "table": "tenders",
-        "filters": [{ "column": "id", "operator": "eq", "value": "{{ $('load-tender').first().json.id }}" }],
-        "data": { "requirements": "{{ $json.requirements }}", "summary": "{{ $json.summary }}", "processing_status": "details_ready" }
+        "filters": [
+          {
+            "column": "id",
+            "operator": "eq",
+            "value": "{{ $('load-tender').first().json.id }}"
+          }
+        ],
+        "data": "auto_map"
       }
     },
     {
@@ -101,19 +131,74 @@
       "id": "respond",
       "type": "respond",
       "name": "Return Requirements",
-      "config": { "status_code": 200 }
+      "config": {
+        "status_code": 200
+      }
+    },
+    {
+      "id": "prepare-save",
+      "type": "code",
+      "name": "Prepare Save Payload",
+      "config": {
+        "code": "const parsed = $json;\nconst loadedTender = $('load-tender').first().json;\nconst update = {\n  id: loadedTender.id,\n  requirements: parsed.requirements || [],\n  summary: parsed.summary || '',\n  processing_status: 'details_ready',\n};\n// Only overwrite title if AI returned a meaningful non-code string\nif (parsed.ai_title && typeof parsed.ai_title === 'string' && parsed.ai_title.trim().length > 3) {\n  update.title = parsed.ai_title.trim();\n}\nreturn [{ json: update }];"
+      }
     }
   ],
   "edges": [
-    { "from": "trigger", "from_output": 0, "to": "load-tender" },
-    { "from": "load-tender", "from_output": 0, "to": "set-status" },
-    { "from": "set-status", "from_output": 0, "to": "prepare-extraction-text" },
-    { "from": "prepare-extraction-text", "from_output": 0, "to": "extract-requirements-llm" },
-    { "from": "extract-requirements-llm", "from_output": 0, "to": "parse-requirements" },
-    { "from": "parse-requirements", "from_output": 0, "to": "generate-summary" },
-    { "from": "generate-summary", "from_output": 0, "to": "parse-summary" },
-    { "from": "parse-summary", "from_output": 0, "to": "save-requirements" },
-    { "from": "save-requirements", "from_output": 0, "to": "build-response-2" },
-    { "from": "build-response-2", "from_output": 0, "to": "respond" }
+    {
+      "from": "trigger",
+      "from_output": 0,
+      "to": "load-tender"
+    },
+    {
+      "from": "load-tender",
+      "from_output": 0,
+      "to": "set-status"
+    },
+    {
+      "from": "set-status",
+      "from_output": 0,
+      "to": "prepare-extraction-text"
+    },
+    {
+      "from": "prepare-extraction-text",
+      "from_output": 0,
+      "to": "extract-requirements-llm"
+    },
+    {
+      "from": "extract-requirements-llm",
+      "from_output": 0,
+      "to": "parse-requirements"
+    },
+    {
+      "from": "parse-requirements",
+      "from_output": 0,
+      "to": "generate-summary"
+    },
+    {
+      "from": "generate-summary",
+      "from_output": 0,
+      "to": "parse-summary"
+    },
+    {
+      "from": "parse-summary",
+      "from_output": 0,
+      "to": "prepare-save"
+    },
+    {
+      "from": "prepare-save",
+      "from_output": 0,
+      "to": "save-requirements"
+    },
+    {
+      "from": "save-requirements",
+      "from_output": 0,
+      "to": "build-response-2"
+    },
+    {
+      "from": "build-response-2",
+      "from_output": 0,
+      "to": "respond"
+    }
   ]
 }
