@@ -52,12 +52,15 @@ export const httpRequestExecutor: NodeExecutor = {
       body = evalTemplate(config.body as string, $inputHelper, $json, context);
     }
     
-    // Fetch with retry on 429
+    // Fetch with retry on 429 and configurable timeout (default 120s)
+    const timeoutMs = typeof config.timeout_ms === 'number' ? config.timeout_ms : 120_000;
     const MAX_RETRIES = 3;
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const resp = await fetch(url, { method, headers, body });
+        const resp = await fetch(url, { method, headers, body, signal: controller.signal });
         
         if (resp.status === 429) {
           const retryAfter = parseInt(resp.headers.get('retry-after') || '5', 10);
@@ -80,9 +83,14 @@ export const httpRequestExecutor: NodeExecutor = {
           responseJson = { text: await resp.text() };
         }
         
+        clearTimeout(timer);
         return [[{ json: responseJson }]];
       } catch (err) {
+        clearTimeout(timer);
         lastError = err instanceof Error ? err : new Error(String(err));
+        if (lastError.name === 'AbortError') {
+          throw new Error(`HTTP request timed out after ${timeoutMs}ms: ${url}`);
+        }
         if (attempt < MAX_RETRIES && lastError.message.includes('429')) continue;
         break;
       }
