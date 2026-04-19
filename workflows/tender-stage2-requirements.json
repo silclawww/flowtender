@@ -87,7 +87,7 @@
         "url": "https://api.x.ai/v1/chat/completions",
         "auth_type": "bearer",
         "auth_value": "{{ process.env.XAI_API_KEY }}",
-        "body": "{{ JSON.stringify({ model: 'grok-4-1-fast-non-reasoning', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Antworte NUR mit validem JSON (kein Markdown, keine Erklärung) im Format: {\\\"title\\\": \\\"...\\\", \\\"summary\\\": \\\"...\\\"}. \\\"title\\\": Ein prägnanter, beschreibender Projekttitel (keine Vergabenummern, keine Codes, keine Dateinamen — beschreibender Text wie \\\"Neubau Sporthalle XYZ\\\"). \\\"summary\\\": Eine Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen.' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text ? $('prepare-extraction-text').first().json.extraction_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
+        "body": "{{ JSON.stringify({ model: 'grok-4-1-fast-non-reasoning', messages: [{ role: 'system', content: 'Du bist ein Assistent für öffentliche Ausschreibungen. Erstelle eine prägnante Zusammenfassung (2-3 Sätze) für einen potenziellen Bieter. Fokus: Was soll gebaut/geliefert/geleistet werden, wo, und für wen. Keine Auflistung von Anforderungen. Antworte NUR mit dem Zusammenfassungstext, ohne JSON oder Formatierung.' }, { role: 'user', content: $('prepare-extraction-text').first().json.extraction_text ? $('prepare-extraction-text').first().json.extraction_text.substring(0, 4000) : 'Kein Text verfügbar' }], temperature: 0 }) }}"
       },
       "retry": {
         "max_attempts": 3,
@@ -100,7 +100,7 @@
       "type": "code",
       "name": "Parse Summary",
       "config": {
-        "code": "const raw = $json.choices[0].message.content || '';\nconst requirements = $('parse-requirements').first().json.requirements || [];\n\nlet title = null;\nlet summaryText = raw.trim();\n\n// Try to parse as JSON {title, summary}\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  if (parsed.title) title = parsed.title.trim();\n  if (parsed.summary) summaryText = parsed.summary.trim();\n} catch {\n  // Model returned plain text — use as summary, no title update\n}\n\nreturn [{ json: { requirements, summary: summaryText, ai_title: title } }];"
+        "code": "const summaryText = $json.choices[0].message.content || '';\nconst requirements = $('parse-requirements').first().json.requirements || [];\nreturn [{ json: { requirements, summary: summaryText.trim() } }];"
       }
     },
     {
@@ -116,7 +116,11 @@
             "value": "{{ $('load-tender').first().json.id }}"
           }
         ],
-        "data": "auto_map"
+        "data": {
+          "requirements": "{{ $json.requirements }}",
+          "summary": "{{ $json.summary }}",
+          "processing_status": "details_ready"
+        }
       }
     },
     {
@@ -133,14 +137,6 @@
       "name": "Return Requirements",
       "config": {
         "status_code": 200
-      }
-    },
-    {
-      "id": "prepare-save",
-      "type": "code",
-      "name": "Prepare Save Payload",
-      "config": {
-        "code": "const parsed = $json;\nconst loadedTender = $('load-tender').first().json;\nconst update = {\n  id: loadedTender.id,\n  requirements: parsed.requirements || [],\n  summary: parsed.summary || '',\n  processing_status: 'details_ready',\n};\n// Only overwrite title if AI returned a meaningful, non-error string.\n// Reject: empty, too short, or known error/placeholder phrases.\nconst REJECT_PATTERNS = [\n  /nicht\\s*verf.gbar/i,\n  /keine\\s*ausschreibung/i,\n  /unbekannt/i,\n  /^leistungsverzeichnis$/i,\n  /kein\\s*titel/i,\n  /n\\/a/i,\n];\nconst aiTitle = parsed.ai_title;\nif (\n  aiTitle &&\n  typeof aiTitle === 'string' &&\n  aiTitle.trim().length > 3 &&\n  !REJECT_PATTERNS.some(re => re.test(aiTitle.trim()))\n) {\n  update.title = aiTitle.trim();\n}\nreturn [{ json: update }];"
       }
     }
   ],
@@ -182,11 +178,6 @@
     },
     {
       "from": "parse-summary",
-      "from_output": 0,
-      "to": "prepare-save"
-    },
-    {
-      "from": "prepare-save",
       "from_output": 0,
       "to": "save-requirements"
     },
