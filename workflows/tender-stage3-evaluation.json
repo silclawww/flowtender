@@ -81,7 +81,7 @@
       "type": "code",
       "name": "Parse Evaluation",
       "config": {
-        "code": "const tenderId = $('load-requirements').first().json.id;\nlet evaluation;\ntry {\n  const content = $json.choices[0].message.content;\n  evaluation = typeof content === 'string' ? JSON.parse(content.replace(/```json|```/g, '').trim()) : content;\n} catch(e) {\n  evaluation = { strategic_fit_score: 0, bid_recommendation: 'needs_review', rationale: '', strengths: [], eligibility_summary: { compliant_count: 0, partial_count: 0, not_met_count: 0, blocking_issues: 0 }, eligibility_requirements: [], risks: [], clarifications: [] };\n}\nreturn [{ json: {\n  id: tenderId,\n  strategic_fit_score: evaluation.strategic_fit_score,\n  bid_recommendation: evaluation.bid_recommendation,\n  rationale: evaluation.rationale || '',\n  strengths: evaluation.strengths || [],\n  eligibility_summary: evaluation.eligibility_summary,\n  eligibility_requirements: evaluation.eligibility_requirements,\n  risks: evaluation.risks,\n  clarifications: evaluation.clarifications,\n  processing_status: 'complete'\n} }];"
+        "code": "const tenderId = $('load-requirements').first().json.id;\nlet evaluation;\ntry {\n  const content = $json.choices[0].message.content;\n  evaluation = typeof content === 'string' ? JSON.parse(content.replace(/```json|```/g, '').trim()) : content;\n} catch(e) {\n  evaluation = { strategic_fit_score: 0, bid_recommendation: 'needs_review', rationale: '', strengths: [], eligibility_summary: { compliant_count: 0, partial_count: 0, not_met_count: 0, blocking_issues: 0 }, eligibility_requirements: [], risks: [], clarifications: [] };\n}\n// Forward distance data from geocode-distance node\nconst distance_km   = $('geocode-distance').first().json.distance_km   ?? null;\nconst distance_note = $('geocode-distance').first().json.distance_note ?? null;\n\nreturn [{ json: {\n  id: tenderId,\n  strategic_fit_score: evaluation.strategic_fit_score,\n  bid_recommendation: evaluation.bid_recommendation,\n  rationale: evaluation.rationale || '',\n  strengths: evaluation.strengths || [],\n  eligibility_summary: evaluation.eligibility_summary,\n  eligibility_requirements: evaluation.eligibility_requirements,\n  risks: evaluation.risks,\n  clarifications: evaluation.clarifications,\n  processing_status: 'complete',\n  distance_km,\n  distance_note,\n} }];"
       }
     },
     {
@@ -104,7 +104,9 @@
           "eligibility_requirements": "{{ JSON.stringify($json.eligibility_requirements) }}",
           "risks": "{{ JSON.stringify($json.risks) }}",
           "clarifications": "{{ JSON.stringify($json.clarifications) }}",
-          "processing_status": "{{ $json.processing_status }}"
+          "processing_status": "{{ $json.processing_status }}",
+          "distance_km": "{{ $json.distance_km }}",
+          "distance_note": "{{ $json.distance_note }}"
         }
       }
     },
