@@ -79,6 +79,30 @@
       }
     },
     {
+      "id": "classify-workload",
+      "type": "http_request",
+      "name": "Classify Positions (Wertschöpfung)",
+      "config": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_type": "bearer",
+        "auth_value": "{{ $env.XAI_API_KEY }}",
+        "timeout_ms": 60000,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{{ JSON.stringify({\n  model: 'grok-4-1-fast-non-reasoning',\n  messages: [\n    {\n      role: 'system',\n      content: 'Du bist ein Experte für deutsche öffentliche Ausschreibungen (GAEB/VOB) und Bauwirtschaft.\\n\\nKlassifiziere jede Leistungsverzeichnis-Position in eine der folgenden Kategorien:\\n\\n- \"eigen\": Typische Eigenleistung — kann von einem Handwerks-/Bauunternehmen mit eigenem Personal erbracht werden. Kernarbeiten des Gewerks.\\n- \"fremd\": Fremdleistung / Nachunternehmerleistung — erfordert ein spezialisiertes Fachunternehmen eines anderen Gewerks oder Spezialtiefbau. Erkennbar an: fachfremden Gewerken, Spezialverfahren, Fachbetriebspflicht, explosions- oder strahlenschutztechnischen Anforderungen.\\n- \"liefer\": Reine Lieferleistung ohne Einbau durch AN — Materiallieferung frei Baustelle, Produktlieferung. Erkennbar an: \"liefern\", \"frei Baustelle\", keine Montage/Einbau erwähnt, Handelsware.\\n- \"gemischt\": Mischleistung mit Liefer- UND Einbauanteil (häufig bei Fertigteilen, Ausstattung).\\n\\nWICHTIG:\\n- Klassifiziere aus Sicht eines generischen Bauunternehmens (nicht gewerks-spezifisch)\\n- \"psch\" (Pauschale) und \"psch\"-ähnliche Einheiten können auf Fremdleistungspakete hinweisen\\n- Baustelleneinrichtung, Verkehrssicherung = eigen\\n- Antwort NUR als JSON-Array\\n\\nFormat:\\n[\\n  { \"id\": \"Pos-ID\", \"type\": \"eigen|fremd|liefer|gemischt\", \"reason\": \"Kurze Begründung (max 10 Wörter)\" }\\n]'\n    },\n    {\n      role: 'user',\n      content: 'Gewerk: ' + ($('load-tender').first().json.trade_category || 'unbekannt') + '\\n\\nPositionen:\\n' + JSON.stringify(\n        ($('load-tender').first().json.gaeb_positions || []).map(function(p) {\n          return { id: p.id, unit: p.unit, short_text: p.short_text, category: (p.category_path || []).join(' > ') };\n        }).slice(0, 120),\n        null, 0\n      )\n    }\n  ],\n  temperature: 0,\n  response_format: { type: 'json_object' }\n}) }}"
+      }
+    },
+    {
+      "id": "parse-workload",
+      "type": "code",
+      "name": "Parse Workload Classification",
+      "config": {
+        "code": "const tender = $('load-tender').first().json;\nconst positions = tender.gaeb_positions || [];\nconst content = $json.choices?.[0]?.message?.content || '[]';\n\nlet classified = [];\ntry {\n  const cleaned = content.replace(/```json/g,'').replace(/```/g,'').trim();\n  const parsed = JSON.parse(cleaned);\n  classified = Array.isArray(parsed) ? parsed : (parsed.positions || parsed.items || []);\n} catch(e) {\n  console.error('Failed to parse workload classification:', e);\n}\n\n// Build lookup map\nconst classMap = {};\nfor (const c of classified) {\n  if (c.id) classMap[c.id] = { type: c.type || 'eigen', reason: c.reason || '' };\n}\n\n// Merge with original positions\nconst enriched = positions.map(function(p) {\n  const cls = classMap[p.id] || { type: 'eigen', reason: '' };\n  return { id: p.id, short_text: p.short_text, unit: p.unit, type: cls.type, reason: cls.reason };\n});\n\n// Summary counts\nconst summary = { eigen: 0, fremd: 0, liefer: 0, gemischt: 0, total: enriched.length };\nfor (const p of enriched) {\n  const t = p.type;\n  if (t in summary) summary[t]++;\n  else summary.eigen++;\n}\n\nconst value_breakdown = {\n  summary,\n  positions: enriched,\n  classified_at: new Date().toISOString()\n};\n\n// Pass through previous node's json (requirements + summary)\nreturn [{ json: { ...$json, value_breakdown } }];"
+      }
+    },
+    {
       "id": "generate-summary",
       "type": "http_request",
       "name": "Generate Project Summary",
@@ -119,7 +143,8 @@
         "data": {
           "requirements": "{{ $json.requirements }}",
           "summary": "{{ $json.summary }}",
-          "processing_status": "details_ready"
+          "processing_status": "details_ready",
+          "value_breakdown": "{{ $json.value_breakdown }}"
         }
       }
     },
@@ -167,11 +192,6 @@
       "to": "parse-requirements"
     },
     {
-      "from": "parse-requirements",
-      "from_output": 0,
-      "to": "generate-summary"
-    },
-    {
       "from": "generate-summary",
       "from_output": 0,
       "to": "parse-summary"
@@ -190,6 +210,21 @@
       "from": "build-response-2",
       "from_output": 0,
       "to": "respond"
+    },
+    {
+      "from": "parse-requirements",
+      "from_output": 0,
+      "to": "classify-workload"
+    },
+    {
+      "from": "classify-workload",
+      "from_output": 0,
+      "to": "parse-workload"
+    },
+    {
+      "from": "parse-workload",
+      "from_output": 0,
+      "to": "generate-summary"
     }
   ]
 }
