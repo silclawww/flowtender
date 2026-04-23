@@ -86,7 +86,7 @@
         "method": "POST",
         "url": "https://api.x.ai/v1/chat/completions",
         "auth_type": "bearer",
-        "auth_value": "{{ $env.XAI_API_KEY }}",
+        "auth_value": "{{ process.env.XAI_API_KEY }}",
         "timeout_ms": 60000,
         "headers": {
           "Content-Type": "application/json"
