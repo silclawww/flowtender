@@ -25,10 +25,10 @@
       "name": "Extract Metadata LLM",
       "config": {
         "method": "POST",
-        "url": "https://api.x.ai/v1/chat/completions",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "auth_type": "bearer",
-        "auth_value": "{{ process.env.XAI_API_KEY }}",
-        "body": "{{ JSON.stringify({ model: 'grok-4-1-fast-non-reasoning', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Extract key metadata from the tender document. Return a valid JSON object with EXACTLY these fields: {\"title\": \"Concise tender title (3-4 words describing task and location)\", \"summary\": \"One concise sentence describing the procurement scope\", \"buyer\": \"Issuing organization name\", \"region\": \"Bauort: municipality or district of the construction site (NOT the buyer address). Derive from project description or tender title. or null\", \"deadline\": \"Submission deadline in YYYY-MM-DD format or null\", \"category\": \"Brief category\", \"tender_type\": \"goods|services|works|mixed\"}. The output language must match the document language. Return ONLY the JSON object.' }, { role: 'user', content: $json.text_for_metadata }], temperature: 0 }) }}"
+        "auth_value": "{{ process.env.GEMINI_API_KEY }}",
+        "body": "{{ JSON.stringify({ model: 'gemini-3.5-flash-lite', messages: [{ role: 'system', content: 'You are an expert tender-analysis system. Extract key metadata from the tender document. Return a valid JSON object with EXACTLY these fields: {\"title\": \"Concise tender title (3-4 words describing task and location)\", \"summary\": \"One concise sentence describing the procurement scope\", \"buyer\": \"Issuing organization name\", \"region\": \"Bauort: municipality or district of the construction site (NOT the buyer address). Derive from project description or tender title. or null\", \"deadline\": \"Submission deadline in YYYY-MM-DD format or null\", \"category\": \"Brief category\", \"tender_type\": \"goods|services|works|mixed\"}. The output language must match the document language. Return ONLY the JSON object.' }, { role: 'user', content: $json.text_for_metadata }], temperature: 0 }) }}"
       },
       "retry": {
         "max_attempts": 3,
