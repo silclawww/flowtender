@@ -13,7 +13,7 @@
     "tenderly_path": "/home/ubuntu/.openclaw/workspace-swe/tenderly-agent",
     "port": 3845,
     "supabase_url": "https://eltpxayfieksnnsglvuj.supabase.co",
-    "supabase_access_token": "sbp_959ee65a8124d464e4eb8be3f605560e913bdfd0",
+    "supabase_access_token": "sbp_REDACTED_REVOKED",
     "supabase_project_id": "eltpxayfieksnnsglvuj",
     "xai_key_env": "XAI_API_KEY",
     "n8n_workflow_summary": {
@@ -67,7 +67,7 @@
       "id": 1,
       "title": "Supabase client setup + migration 001",
       "type": "db",
-      "description": "Create Supabase client files and the flowtender DB schema. (1) lib/supabase/client.ts — browser client using createBrowserClient from @supabase/ssr; (2) lib/supabase/service.ts — server client using the service role key (SUPABASE_SERVICE_ROLE_KEY env); (3) supabase/migrations/001_flowtender_schema.sql — create tables: flow_executions (id UUID PK, workflow_id TEXT, trigger_payload JSONB, status TEXT, tender_id UUID nullable, started_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ, duration_ms INT, error TEXT) and flow_node_runs (id UUID PK DEFAULT gen_random_uuid(), execution_id UUID REFERENCES flow_executions ON DELETE CASCADE, node_id TEXT, node_type TEXT, node_name TEXT, input JSONB, output JSONB, status TEXT DEFAULT 'pending', error TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, duration_ms INT); Apply via Supabase Management API: POST https://api.supabase.com/v1/projects/eltpxayfieksnnsglvuj/database/query with access token sbp_959ee65a8124d464e4eb8be3f605560e913bdfd0 and the migration SQL as the query body.",
+      "description": "Create Supabase client files and the flowtender DB schema. (1) lib/supabase/client.ts — browser client using createBrowserClient from @supabase/ssr; (2) lib/supabase/service.ts — server client using the service role key (SUPABASE_SERVICE_ROLE_KEY env); (3) supabase/migrations/001_flowtender_schema.sql — create tables: flow_executions (id UUID PK, workflow_id TEXT, trigger_payload JSONB, status TEXT, tender_id UUID nullable, started_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ, duration_ms INT, error TEXT) and flow_node_runs (id UUID PK DEFAULT gen_random_uuid(), execution_id UUID REFERENCES flow_executions ON DELETE CASCADE, node_id TEXT, node_type TEXT, node_name TEXT, input JSONB, output JSONB, status TEXT DEFAULT 'pending', error TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, duration_ms INT); Apply via Supabase Management API: POST https://api.supabase.com/v1/projects/eltpxayfieksnnsglvuj/database/query with access token sbp_REDACTED_REVOKED and the migration SQL as the query body.",
       "acceptance_criteria": [
         "lib/supabase/client.ts and service.ts created",
         "Migration 001 SQL file created",

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRunner } from '@/lib/runner';
 
+// Pipeline stages run synchronous LLM calls; allow long serverless execution on Vercel
+export const maxDuration = 300;
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ workflowId: string }> }
