@@ -5,26 +5,57 @@ const TENANT_SCOPED_WORKFLOWS = new Set([
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function requireWorkflowTenantContext(
+export interface TenantContext {
+  tender_id: string;
+  org_id: string;
+}
+
+interface WorkflowPayloadPreflight {
+  payload: Record<string, unknown>;
+  tenantContext: TenantContext | null;
+}
+
+function invalidTenantContext(): never {
+  throw new Error('INVALID_TENANT_CONTEXT');
+}
+
+function optionalUuid(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) invalidTenantContext();
+  return value.toLowerCase();
+}
+
+function canonicalUuid(
+  directValue: unknown,
+  wrappedValue: unknown,
+): string {
+  const direct = optionalUuid(directValue);
+  const wrapped = optionalUuid(wrappedValue);
+  if (direct && wrapped && direct !== wrapped) invalidTenantContext();
+  return wrapped ?? direct ?? invalidTenantContext();
+}
+
+export function preflightWorkflowPayload(
   workflowId: string,
   payload: unknown,
-): void {
-  if (!TENANT_SCOPED_WORKFLOWS.has(workflowId)) return;
+): WorkflowPayloadPreflight {
+  if (!TENANT_SCOPED_WORKFLOWS.has(workflowId)) {
+    return { payload: payload as Record<string, unknown>, tenantContext: null };
+  }
 
   const root = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? payload as Record<string, unknown>
     : null;
-  if (!root) throw new Error('INVALID_TENANT_CONTEXT');
+  if (!root) invalidTenantContext();
 
   const nestedBody = root.body;
-  const body = nestedBody && typeof nestedBody === 'object' && !Array.isArray(nestedBody)
+  const wrapped = nestedBody && typeof nestedBody === 'object' && !Array.isArray(nestedBody)
     ? nestedBody as Record<string, unknown>
-    : root;
+    : null;
 
-  if (typeof body.tender_id !== 'string'
-    || !UUID_PATTERN.test(body.tender_id)
-    || typeof body.org_id !== 'string'
-    || !UUID_PATTERN.test(body.org_id)) {
-    throw new Error('INVALID_TENANT_CONTEXT');
-  }
+  const tenantContext = {
+    tender_id: canonicalUuid(root.tender_id, wrapped?.tender_id),
+    org_id: canonicalUuid(root.org_id, wrapped?.org_id),
+  };
+  return { payload: tenantContext, tenantContext };
 }

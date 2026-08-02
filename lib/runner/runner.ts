@@ -19,7 +19,7 @@ import {
   normalizeCorrelationId,
   type SafeErrorCode,
 } from '../telemetry.ts';
-import { requireWorkflowTenantContext } from '../tenant-context.ts';
+import { preflightWorkflowPayload } from '../tenant-context.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -102,7 +102,8 @@ export class WorkflowRunner {
     triggerPayload: Record<string, unknown>,
     options: RunOptions = {}
   ): Promise<ExecutionResult> {
-    requireWorkflowTenantContext(workflowId, triggerPayload);
+    const preflight = preflightWorkflowPayload(workflowId, triggerPayload);
+    const workflowPayload = preflight.payload;
 
     const executionId = uuidv4();
     const startTime = Date.now();
@@ -110,8 +111,9 @@ export class WorkflowRunner {
     const correlationId = normalizeCorrelationId(options.correlationId, executionId);
 
     // Detect tender_id in payload
-    const tender_id = triggerPayload.tender_id as string | undefined ||
-                      (triggerPayload.body as Record<string,unknown>)?.tender_id as string | undefined;
+    const tender_id = preflight.tenantContext?.tender_id
+      ?? (workflowPayload.tender_id as string | undefined)
+      ?? ((workflowPayload.body as Record<string,unknown>)?.tender_id as string | undefined);
 
     // Create execution record
     await persistExactlyOneTelemetryRow(() => this.supabase
@@ -157,7 +159,7 @@ export class WorkflowRunner {
       const context: ExecutionContext = new Map();
 
       // Initial input for start nodes = trigger payload
-      const triggerItems: ExecutionItem[] = [{ json: triggerPayload }];
+      const triggerItems: ExecutionItem[] = [{ json: workflowPayload }];
 
       // BFS execution queue: { nodeId, input }
       const queue: Array<{ node: WorkflowNode; input: ExecutionItem[] }> = 
