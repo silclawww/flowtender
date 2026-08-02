@@ -23,4 +23,3 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: ['/', '/execution/:path*', '/workflows/:path*'],
 };
-
