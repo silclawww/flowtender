@@ -29,10 +29,12 @@ function rejectingClient() {
 }
 
 for (const workflowId of [
+  'tender-stage1-pdf',
+  'tender-stage1-gaeb',
   'tender-stage2-requirements',
   'tender-stage3-evaluation',
 ]) {
-  test(`${workflowId} rejects invalid tenant context before DB or workflow loading`, async () => {
+  test(`${workflowId} rejects invalid admission context before DB or workflow loading`, async () => {
     for (const payload of [
       null,
       [],
@@ -57,6 +59,20 @@ for (const workflowId of [
         admission_id: admissionId,
         body: { tender_id: tenderId, org_id: otherOrgId },
       },
+      {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+        body: { tender_id: tenderId, org_id: orgId, user_id: otherTenderId },
+      },
+      {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+        body: { tender_id: tenderId, org_id: orgId, admission_id: otherTenderId },
+      },
     ]) {
       const database = rejectingClient();
       let workflowLoads = 0;
@@ -68,7 +84,8 @@ for (const workflowId of [
       await assert.rejects(
         () => runner.run(workflowId, payload as Record<string, unknown>),
         (error: unknown) => {
-          assert.equal(String(error), 'Error: INVALID_TENANT_CONTEXT');
+          assert.equal((error as { status?: number }).status, 503);
+          assert.equal((error as { code?: string }).code, 'ADMISSION_UNAVAILABLE');
           assert.doesNotMatch(String(error), /customer-content/);
           return true;
         },
@@ -79,7 +96,7 @@ for (const workflowId of [
   });
 }
 
-test('valid direct and wrapped Stage 2/3 tenant contexts pass preflight', () => {
+test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow input', () => {
   for (const workflowId of [
     'tender-stage2-requirements',
     'tender-stage3-evaluation',
@@ -90,14 +107,53 @@ test('valid direct and wrapped Stage 2/3 tenant contexts pass preflight', () => 
       user_id: actorId,
       admission_id: admissionId,
     }), {
-      payload: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
-      tenantContext: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+      payload: { tender_id: tenderId, org_id: orgId },
+      trustedContext: {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+        operation: workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
+      },
     });
     assert.deepEqual(preflightWorkflowPayload(workflowId, {
       body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
     }), {
-      payload: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
-      tenantContext: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+      payload: { tender_id: tenderId, org_id: orgId },
+      trustedContext: {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+        operation: workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
+      },
+    });
+  }
+});
+
+test('Stage 1 keeps source data but recursively strips actor and lease fields', () => {
+  for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
+    assert.deepEqual(preflightWorkflowPayload(workflowId, {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      file_name: 'source.pdf',
+      nested: { user_id: actorId, keep: 'safe', admission_id: admissionId },
+    }), {
+      payload: {
+        tender_id: tenderId,
+        org_id: orgId,
+        file_name: 'source.pdf',
+        nested: { keep: 'safe' },
+      },
+      trustedContext: {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+        operation: 'upload',
+      },
     });
   }
 });
@@ -148,7 +204,7 @@ function passthroughWorkflow(workflowId: string): WorkflowDefinition {
   };
 }
 
-test('valid Stage 2/3 forms record and process the same canonical identifiers', async () => {
+test('valid Stage 2/3 forms record canonical IDs without exposing actor or lease to nodes', async () => {
   for (const workflowId of [
     'tender-stage2-requirements',
     'tender-stage3-evaluation',
@@ -172,8 +228,6 @@ test('valid Stage 2/3 forms record and process the same canonical identifiers', 
       assert.deepEqual(result.response_payload, [{ json: {
         tender_id: tenderId,
         org_id: orgId,
-        user_id: actorId,
-        admission_id: admissionId,
       } }]);
       const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
       assert.equal(execution?.value.tender_id, tenderId);
@@ -184,22 +238,42 @@ test('valid Stage 2/3 forms record and process the same canonical identifiers', 
   }
 });
 
-test('Stage 1 remains outside the tenant-context preflight', async () => {
-  const payload = { source_filename: 'source.pdf' };
-  assert.deepEqual(preflightWorkflowPayload('tender-stage1-pdf', payload), {
-    payload,
-    tenantContext: null,
-  });
-  assert.deepEqual(preflightWorkflowPayload('tender-stage1-gaeb', payload), {
-    payload,
-    tenantContext: null,
-  });
+test('missing, forged, or replayed leases stop every protected workflow before telemetry or nodes', async () => {
+  for (const workflowId of [
+    'tender-stage1-pdf',
+    'tender-stage1-gaeb',
+    'tender-stage2-requirements',
+    'tender-stage3-evaluation',
+  ]) {
+    let rpcCalls = 0;
+    let tableCalls = 0;
+    let workflowLoads = 0;
+    const runner = new WorkflowRunner({
+      async rpc(name: string) {
+        rpcCalls += 1;
+        assert.equal(name, 'claim_pipeline_admission');
+        return { data: false, error: null };
+      },
+      from() {
+        tableCalls += 1;
+        throw new Error('telemetry must not run');
+      },
+    } as never, () => {
+      workflowLoads += 1;
+      throw new Error('workflow must not load');
+    });
 
-  const database = rejectingClient();
-  const runner = new WorkflowRunner(database.client as never);
-  await assert.rejects(
-    () => runner.run('tender-stage1-pdf', {}),
-    TelemetryPersistenceError,
-  );
-  assert.equal(database.calls, 1);
+    await assert.rejects(
+      runner.run(workflowId, {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+      }),
+      /ADMISSION_UNAVAILABLE/,
+    );
+    assert.equal(rpcCalls, 1);
+    assert.equal(tableCalls, 0);
+    assert.equal(workflowLoads, 0);
+  }
 });

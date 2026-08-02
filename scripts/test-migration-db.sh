@@ -40,4 +40,8 @@ psql "${psql_args[@]}" \
   --file "$repo_dir/supabase/migrations/003_pipeline_admission.sql" \
   --file "$repo_dir/tests/sql/migration-db-assertions.sql"
 
+FLOWTENDER_TEST_DATABASE_URL="$database_url" \
+FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES \
+  "$repo_dir/scripts/test-admission-concurrency.sh"
+
 echo "migration DB test passed"

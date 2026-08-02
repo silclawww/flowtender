@@ -81,10 +81,9 @@ test('retry fails closed without a valid immutable org context', () => {
   );
 });
 
-test('retry route reconstructs immutable tenant and actor identifiers under one root budget', async () => {
+test('retry sender transfers one immutable lease to the receiver without releasing it', async () => {
   let calledPayload: Record<string, unknown> | undefined;
   let admission: Record<string, unknown> | undefined;
-  const released: string[] = [];
   const response = await handleRetryExecution('execution-id', {
     loadExecution: async () => ({ data: failedStage2, error: null }),
     loadRetryContext: async (rootId) => {
@@ -108,7 +107,6 @@ test('retry route reconstructs immutable tenant and actor identifiers under one 
       admission = input;
       return 'lease-a';
     },
-    releaseAdmission: async (leaseId) => { released.push(leaseId); },
   });
 
   assert.equal(response.status, 200);
@@ -124,7 +122,6 @@ test('retry route reconstructs immutable tenant and actor identifiers under one 
     operation: 'retry',
     retryRootExecutionId: rootExecutionId,
   });
-  assert.deepEqual(released, ['lease-a']);
 });
 
 test('a failed retried workflow is never reported as a successful HTTP response', async () => {
@@ -139,7 +136,6 @@ test('a failed retried workflow is never reported as a successful HTTP response'
       duration_ms: 1,
     }),
     acquireAdmission: async () => 'lease-a',
-    releaseAdmission: async () => {},
   });
 
   assert.equal(response.status, 500);
@@ -165,7 +161,6 @@ test('stage-1 retry rejection does not look up a tender', async () => {
       throw new Error('must not run');
     },
     acquireAdmission: async () => { throw new Error('must not run'); },
-    releaseAdmission: async () => { throw new Error('must not run'); },
   });
 
   assert.equal(response.status, 409);
@@ -203,7 +198,6 @@ test('retry route fails closed for missing, invalid, and unavailable org context
         throw new Error('must not run');
       },
       acquireAdmission: async () => { throw new Error('must not run'); },
-      releaseAdmission: async () => { throw new Error('must not run'); },
     });
 
     assert.equal(response.status, testCase.status);
@@ -214,19 +208,17 @@ test('retry route fails closed for missing, invalid, and unavailable org context
   }
 });
 
-test('limiter denial and failure reject before workflow and release only acquired leases', async () => {
+test('limiter denial and failure reject before workflow', async () => {
   for (const testCase of [
     { error: new AdmissionControlError(429, 'PIPELINE_LIMITED'), status: 429, code: 'PIPELINE_LIMITED' },
     { error: new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE'), status: 503, code: 'ADMISSION_UNAVAILABLE' },
   ]) {
     let workflowRuns = 0;
-    let releases = 0;
     const response = await handleRetryExecution('execution-id', {
       loadExecution: async () => ({ data: failedStage2, error: null }),
       loadRetryContext: async () => ({ data: actorContext, error: null }),
       loadTenderOrg: async () => ({ data: { org_id: orgId }, error: null }),
       acquireAdmission: async () => { throw testCase.error; },
-      releaseAdmission: async () => { releases += 1; },
       runWorkflow: async () => {
         workflowRuns += 1;
         throw new Error('must not run');
@@ -236,7 +228,6 @@ test('limiter denial and failure reject before workflow and release only acquire
     assert.equal(response.status, testCase.status);
     assert.deepEqual(await response.json(), { error_code: testCase.code });
     assert.equal(workflowRuns, 0);
-    assert.equal(releases, 0);
   }
 });
 

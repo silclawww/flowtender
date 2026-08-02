@@ -343,6 +343,30 @@ BEGIN
 
   DELETE FROM public.pipeline_admissions;
 
+  INSERT INTO public.pipeline_admissions (
+    actor_user_id, org_id, operation, root_execution_id,
+    admitted_at, lease_expires_at, claimed_at, released_at
+  ) VALUES (
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    v_root,
+    clock_timestamp(),
+    clock_timestamp() + interval '12 minutes',
+    clock_timestamp(),
+    clock_timestamp()
+  );
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000002',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'retry',
+    v_root
+  );
+  IF v_result.allowed OR v_result.reason <> 'retry_context_mismatch' THEN
+    RAISE EXCEPTION 'retry root was accepted for a different actor';
+  END IF;
+
   FOR v_index IN 1..2 LOOP
     SELECT * INTO v_result FROM public.acquire_pipeline_admission(
       'aaaaaaaa-0000-4000-8000-000000000001',
@@ -373,11 +397,14 @@ BEGIN
 
   DELETE FROM public.pipeline_admissions;
 
-  FOR v_index IN 1..12 LOOP
+  -- Seed eleven requests, then use one original upload lease for the complete
+  -- twelfth request (receiver plus supplemental work). A second acquisition
+  -- would become request thirteen and must be denied.
+  FOR v_index IN 1..11 LOOP
     SELECT * INTO v_result FROM public.acquire_pipeline_admission(
       'aaaaaaaa-0000-4000-8000-000000000003',
       'bbbbbbbb-0000-4000-8000-000000000002',
-      'stage2',
+      'upload',
       NULL
     );
     IF NOT v_result.allowed THEN RAISE EXCEPTION 'user rate seed % was denied', v_index; END IF;
@@ -387,7 +414,27 @@ BEGIN
   SELECT * INTO v_result FROM public.acquire_pipeline_admission(
     'aaaaaaaa-0000-4000-8000-000000000003',
     'bbbbbbbb-0000-4000-8000-000000000002',
-    'stage2',
+    'upload',
+    NULL
+  );
+  IF NOT v_result.allowed THEN RAISE EXCEPTION 'twelfth upload was denied'; END IF;
+  v_lease_a := v_result.lease_id;
+  IF NOT public.claim_pipeline_admission(
+    v_lease_a,
+    'aaaaaaaa-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
+    'dddddddd-0000-4000-8000-000000000001'
+  ) THEN
+    RAISE EXCEPTION 'twelfth upload receiver claim failed';
+  END IF;
+  -- Supplemental extraction stays under v_lease_a: deliberately no acquire.
+  PERFORM public.release_pipeline_admission(v_lease_a);
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
     NULL
   );
   IF v_result.allowed OR v_result.reason <> 'user_rate' THEN

@@ -16,6 +16,27 @@ The migration is the source of truth for the pilot limits:
 - two retries per root execution per rolling 24 hours;
 - 12-minute self-expiring leases.
 
+Retry acquisition takes a transaction-scoped advisory lock for the immutable
+root before the user and organisation locks. The root must belong to an original,
+claimed Stage 2/3 execution for the same actor and organisation. This makes the
+two-retry ceiling global even when requests race through different processes.
+
+## Lease ownership and handoff
+
+- Tenderly acquires exactly one upload lease before buffering or parsing. The
+  Flowtender Stage 1 receiver claims it before telemetry, workflow loading,
+  database access, or LLM work, but deliberately does not release it.
+- A complete synchronous Stage 1 response transfers ownership back to Tenderly.
+  Tenderly keeps that original lease active through its existing supplemental
+  211/214 extraction and final local reads/writes, then releases it. It never
+  performs a second acquisition, including for the twelfth hourly request.
+- If dispatch is aborted or the response body is lost, ownership is ambiguous:
+  Tenderly does not release and the 12-minute TTL closes the lease. There is no
+  direct-database/LLM fallback after dispatch.
+- For Stage 2, Stage 3, and retry, Flowtender owns the claimed lease and releases
+  it in a receiver-side `finally` only after all workflow and telemetry mutations
+  settle. Tenderly and the retry route never release after dispatch.
+
 Rows become purge-eligible after 48 hours. A daily `pg_cron` sweep runs at
 03:41 UTC, so normal retention is under 72 hours. A disabled or missed scheduler
 run can extend that period and must alert the operator.
@@ -61,7 +82,14 @@ forward-only and does not alter Flowtender telemetry tables.
 - A second concurrent user request and excess hourly requests receive the safe
   `PIPELINE_LIMITED` response with no partial tender or execution state.
 - A failed Stage 2/3 execution can be retried twice; a third retry for the same
-  immutable root is denied before paid work.
+  immutable root is denied before paid work. A root owned by another actor or
+  organisation is rejected as unavailable.
+- Four concurrent retry transactions across two valid principals sharing one
+  test root admit exactly two total requests. The disposable-database test runs
+  this as four independent PostgreSQL sessions.
+- Eleven released requests followed by one complete upload plus supplemental
+  extraction use twelve admissions total; no second lease is acquired for the
+  supplemental step, and the next request is denied by the hourly boundary.
 - The admission ledger exposes no rows to `anon` or `authenticated`, contains only
   allowlisted metadata, and the scheduled purge produces the expected row count.
 

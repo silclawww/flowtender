@@ -38,7 +38,6 @@ export interface RetryDependencies {
     operation: 'retry';
     retryRootExecutionId: string;
   }): Promise<string>;
-  releaseAdmission(leaseId: string): Promise<void>;
 }
 
 function errorResponse(errorCode: string, status: number) {
@@ -129,6 +128,8 @@ export async function handleRetryExecution(
   }
 
   try {
+    // The synchronous runner claims and owns this lease from here. Releasing
+    // it in the sender would race receiver telemetry and database writes.
     const result = await dependencies.runWorkflow(
       retry.workflowId,
       { ...retry.triggerPayload, admission_id: leaseId },
@@ -158,7 +159,5 @@ export async function handleRetryExecution(
   } catch (error) {
     if (isTelemetryPersistenceError(error)) return errorResponse(error.code, 503);
     return errorResponse('EXECUTION_FAILED', 500);
-  } finally {
-    await dependencies.releaseAdmission(leaseId).catch(() => undefined);
   }
 }

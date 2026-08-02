@@ -72,8 +72,30 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Every caller takes locks in this order, serializing both principals without
-  -- a process-local limiter or a deadlock-prone inverse order.
+  -- Global lock order is retry-root (retry requests only), then user, then org.
+  -- No code path may acquire a retry-root lock after a principal lock.
+  IF p_operation = 'retry' THEN
+    PERFORM pg_advisory_xact_lock(
+      hashtextextended('pipeline:retry-root:' || p_retry_root_execution_id::TEXT, 0)
+    );
+
+    -- The retry root is a capability only for the same actor and organisation
+    -- that owned the original claimed Stage 2/3 execution.
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.pipeline_admissions
+      WHERE root_execution_id = p_retry_root_execution_id
+        AND operation IN ('stage2', 'stage3')
+        AND claimed_at IS NOT NULL
+        AND actor_user_id = p_actor_user_id
+        AND org_id = p_org_id
+    ) THEN
+      RETURN QUERY SELECT false, 'retry_context_mismatch'::TEXT, NULL::UUID;
+      RETURN;
+    END IF;
+  END IF;
+
+  -- Every caller serializes both principals without a process-local limiter.
   PERFORM pg_advisory_xact_lock(hashtextextended('pipeline:user:' || p_actor_user_id::TEXT, 0));
   PERFORM pg_advisory_xact_lock(hashtextextended('pipeline:org:' || p_org_id::TEXT, 0));
 

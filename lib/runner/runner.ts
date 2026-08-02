@@ -20,7 +20,7 @@ import {
   type SafeErrorCode,
 } from '../telemetry.ts';
 import { preflightWorkflowPayload } from '../tenant-context.ts';
-import { claimPipelineAdmission } from '../admission-control.ts';
+import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -110,28 +110,33 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = preflight.tenantContext
+    const correlationId = preflight.trustedContext
       ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
       : normalizeCorrelationId(options.correlationId, executionId);
 
     // Detect tender_id in payload
-    const tender_id = preflight.tenantContext?.tender_id
+    const tender_id = preflight.trustedContext?.tender_id
       ?? (workflowPayload.tender_id as string | undefined)
       ?? ((workflowPayload.body as Record<string,unknown>)?.tender_id as string | undefined);
-    if (preflight.tenantContext) {
+    let receiverOwnedLease: string | null = null;
+    if (preflight.trustedContext) {
       await claimPipelineAdmission(this.supabase, {
-        leaseId: preflight.tenantContext.admission_id,
-        actorUserId: preflight.tenantContext.user_id,
-        orgId: preflight.tenantContext.org_id,
+        leaseId: preflight.trustedContext.admission_id,
+        actorUserId: preflight.trustedContext.user_id,
+        orgId: preflight.trustedContext.org_id,
         operation: options.retryRootExecutionId
           ? 'retry'
-          : workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
+          : preflight.trustedContext.operation,
         rootExecutionId: correlationId,
       });
+      if (preflight.trustedContext.operation !== 'upload') {
+        receiverOwnedLease = preflight.trustedContext.admission_id;
+      }
     }
 
-    // Create execution record
-    await persistExactlyOneTelemetryRow(() => this.supabase
+    try {
+      // Create execution record
+      await persistExactlyOneTelemetryRow(() => this.supabase
       .from('flow_executions')
       .insert(createExecutionTelemetry({
         executionId,
@@ -294,13 +299,18 @@ export class WorkflowRunner {
 
     if (telemetryFailure) throw telemetryFailure;
 
-    return {
-      execution_id: executionId,
-      status: executionErrorCode ? 'error' : 'done',
-      response_payload: responsePayload,
-      error_code: executionErrorCode,
-      duration_ms: duration,
-    };
+      return {
+        execution_id: executionId,
+        status: executionErrorCode ? 'error' : 'done',
+        response_payload: responsePayload,
+        error_code: executionErrorCode,
+        duration_ms: duration,
+      };
+    } finally {
+      if (receiverOwnedLease) {
+        await releasePipelineAdmission(this.supabase, receiverOwnedLease);
+      }
+    }
   }
 }
 

@@ -8,8 +8,6 @@ import type { WorkflowDefinition, WorkflowNode } from '../types/workflow.ts';
 
 const tenderId = '0b2f6f51-b91a-47db-b652-6a680a978efe';
 const orgId = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
-const actorId = 'fca2e00f-80ad-4c6c-afbb-392cf49eb7b6';
-const admissionId = 'c2b37af4-c299-4db7-859f-8423c3230d70';
 
 function loadWorkflow(file: string): WorkflowDefinition {
   return JSON.parse(
@@ -32,25 +30,26 @@ async function runTrigger(workflow: WorkflowDefinition, json: Record<string, unk
 }
 
 for (const file of [
+  'tender-stage1-pdf.json',
+  'tender-stage1-gaeb.json',
   'tender-stage2-requirements.json',
   'tender-stage3-evaluation.json',
 ]) {
-  test(`${file} accepts only a complete UUID tenant context`, async () => {
+  test(`${file} accepts only the canonical tender and organisation passed by preflight`, async () => {
     const workflow = loadWorkflow(file);
     const output = await runTrigger(workflow, {
-      body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+      tender_id: tenderId,
+      org_id: orgId,
     });
 
-    assert.deepEqual(output, [[{ json: { tender_id: tenderId, org_id: orgId, user_id: actorId } }]]);
+    assert.deepEqual(output, [[{ json: { tender_id: tenderId, org_id: orgId } }]]);
 
     for (const invalid of [
       {},
       { tender_id: tenderId },
       { org_id: orgId },
-      { tender_id: tenderId, org_id: orgId, user_id: actorId },
       { tender_id: 'customer-content-not-a-uuid', org_id: orgId },
       { tender_id: tenderId, org_id: 'customer-content-not-a-uuid' },
-      { tender_id: tenderId, org_id: orgId, user_id: 'customer-content-not-a-uuid', admission_id: admissionId },
     ]) {
       await assert.rejects(
         () => runTrigger(workflow, invalid),
@@ -74,6 +73,18 @@ for (const file of [
     assert.deepEqual(startNodes, ['trigger']);
   });
 }
+
+test('no workflow definition can pass the actor or lease envelope into a node', () => {
+  for (const file of [
+    'tender-stage1-pdf.json',
+    'tender-stage1-gaeb.json',
+    'tender-stage2-requirements.json',
+    'tender-stage3-evaluation.json',
+  ]) {
+    const source = readFileSync(new URL(`../workflows/${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /user_id|admission_id/, file);
+  }
+});
 
 test('stage 2 scopes every privileged tender read and update to both IDs', () => {
   const workflow = loadWorkflow('tender-stage2-requirements.json');

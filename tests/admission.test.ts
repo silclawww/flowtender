@@ -70,6 +70,36 @@ test('limiter denial and failures fail closed without raw errors', async () => {
   }
 });
 
+test('acquire rejects every non-canonical RPC cardinality and shape', async () => {
+  const valid = { allowed: true, reason: null, lease_id: leaseId };
+  const malformed = [
+    [],
+    [valid, valid],
+    valid,
+    [null],
+    [{ allowed: 'true', reason: null, lease_id: leaseId }],
+    [{ allowed: true, reason: 'user_rate', lease_id: leaseId }],
+    [{ allowed: true, reason: null, lease_id: 'not-a-uuid' }],
+    [{ allowed: false, reason: null, lease_id: null }],
+    [{ allowed: false, reason: 'unknown_reason', lease_id: null }],
+    [{ allowed: false, reason: 'user_rate', lease_id: leaseId }],
+    [{ allowed: true, reason: null, lease_id: leaseId, unexpected: true }],
+  ];
+
+  for (const data of malformed) {
+    await assert.rejects(
+      acquirePipelineAdmission({ rpc: async () => ({ data, error: null }) }, {
+        actorUserId: actorId,
+        orgId,
+        operation: 'upload',
+      }),
+      (error: unknown) => error instanceof AdmissionControlError
+        && error.status === 503
+        && error.code === 'ADMISSION_UNAVAILABLE',
+    );
+  }
+});
+
 test('release is safe and bounded when the database is unavailable', async () => {
   assert.equal(await releasePipelineAdmission({
     rpc: async () => ({ data: true, error: null }),

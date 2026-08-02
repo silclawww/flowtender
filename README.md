@@ -153,7 +153,9 @@ per-organisation, and retry-root admission gate shared by Tenderly and Flowtende
 Use [`docs/pipeline-admission-rollout.md`](./docs/pipeline-admission-rollout.md) for
 the limit definitions, retention boundary, deployment order, and production smoke
 checks. Do not deploy the two application changes independently outside that
-maintenance procedure.
+maintenance procedure. `npm run test:migration-db` also runs the retry ceiling
+through four independent PostgreSQL sessions and proves the actor/organisation
+binding for retry roots.
 
 ### Production
 

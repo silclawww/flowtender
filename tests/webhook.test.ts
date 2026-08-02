@@ -124,3 +124,33 @@ test('missing or unclaimable admission state prevents workflow execution safely'
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(await response.json(), { error_code: 'ADMISSION_UNAVAILABLE' });
 });
+
+test('invalid Stage 1/2 envelopes return one redacted admission error', async () => {
+  for (const path of ['tender-metadata', 'tender-details']) {
+    const request = new Request(`https://flowtender.example/api/flow/webhook/${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    const response = await handleWebhookRequest(
+      request,
+      path,
+      async (workflowId, payload) => {
+        const { WorkflowRunner } = await import('../lib/runner/runner.ts');
+        return new WorkflowRunner({
+          from() { throw new Error('database must not run'); },
+        } as never, () => { throw new Error('workflow must not load'); })
+          .run(workflowId, payload);
+      },
+      SERVICE_KEY,
+      OPERATOR_KEY,
+    );
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { error_code: 'ADMISSION_UNAVAILABLE' });
+  }
+});

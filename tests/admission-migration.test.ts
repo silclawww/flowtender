@@ -26,7 +26,10 @@ test('atomic policy centrally enforces both principals and the retry ceiling', (
   assert.match(sql, /v_user_hourly\s+CONSTANT INTEGER := 12/);
   assert.match(sql, /v_org_hourly\s+CONSTANT INTEGER := 40/);
   assert.match(sql, /v_retry_daily\s+CONSTANT INTEGER := 2/);
-  assert.equal((sql.match(/pg_advisory_xact_lock/g) ?? []).length >= 2, true);
+  assert.equal((sql.match(/pg_advisory_xact_lock/g) ?? []).length >= 3, true);
+  assert.match(sql, /pipeline:retry-root:/);
+  assert.match(sql, /retry_context_mismatch/);
+  assert.match(sql, /operation IN \('stage2', 'stage3'\)[\s\S]*claimed_at IS NOT NULL[\s\S]*actor_user_id = p_actor_user_id[\s\S]*org_id = p_org_id/);
   assert.match(sql, /operation = 'retry'[\s\S]*root_execution_id = p_retry_root_execution_id/);
 });
 
@@ -48,4 +51,13 @@ test('migration is retry-safe and leaves the strict telemetry allowlist unchange
 
   const script = readFileSync(new URL('../scripts/test-migration-db.sh', import.meta.url), 'utf8');
   assert.equal((script.match(/003_pipeline_admission\.sql/g) ?? []).length, 2);
+  assert.match(script, /test-admission-concurrency\.sh/);
+
+  const concurrency = readFileSync(
+    new URL('../scripts/test-admission-concurrency.sh', import.meta.url),
+    'utf8',
+  );
+  assert.match(concurrency, /for session_index in 1 2 3 4/);
+  assert.match(concurrency, /retry_ceiling/);
+  assert.match(concurrency, /retry_context_mismatch/);
 });

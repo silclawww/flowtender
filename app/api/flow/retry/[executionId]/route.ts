@@ -3,10 +3,7 @@ import { isOperatorAuthorized } from '@/lib/auth';
 import { handleRetryExecution } from '@/lib/retry-handler';
 import { createServiceClient } from '@/lib/supabase/service';
 import { getRunner } from '@/lib/runner';
-import {
-  acquirePipelineAdmission,
-  releasePipelineAdmission,
-} from '@/lib/admission-control';
+import { acquirePipelineAdmission } from '@/lib/admission-control';
 
 // Retried LLM stages need the same serverless window as initial processing.
 export const maxDuration = 300;
@@ -58,8 +55,5 @@ export async function POST(
       options,
     ),
     acquireAdmission: (input) => acquirePipelineAdmission(supabase, input),
-    releaseAdmission: async (leaseId) => {
-      await releasePipelineAdmission(supabase, leaseId);
-    },
   });
 }

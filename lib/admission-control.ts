@@ -3,11 +3,19 @@ export type PipelineOperation = 'upload' | 'stage2' | 'stage3' | 'retry';
 type RpcResult = { data: unknown; error: unknown };
 export type AdmissionRpcClient = unknown;
 
-type AdmissionRow = {
-  allowed?: unknown;
-  reason?: unknown;
-  lease_id?: unknown;
-};
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LIMIT_REASONS = new Set([
+  'user_concurrency',
+  'org_concurrency',
+  'user_rate',
+  'org_rate',
+  'retry_ceiling',
+]);
+const CONTEXT_REASONS = new Set(['invalid_context', 'retry_context_mismatch']);
+
+type CanonicalAdmission =
+  | { allowed: true; reason: null; leaseId: string }
+  | { allowed: false; reason: string; leaseId: null };
 
 export class AdmissionControlError extends Error {
   readonly status: 429 | 503;
@@ -24,9 +32,25 @@ export class AdmissionControlError extends Error {
   }
 }
 
-function firstRow(data: unknown): AdmissionRow | null {
-  const value = Array.isArray(data) ? data[0] : data;
-  return value && typeof value === 'object' ? value as AdmissionRow : null;
+function parseAdmission(data: unknown): CanonicalAdmission | null {
+  if (!Array.isArray(data) || data.length !== 1) return null;
+  const row = data[0];
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const record = row as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== 'allowed,lease_id,reason') return null;
+  if (record.allowed === true
+    && record.reason === null
+    && typeof record.lease_id === 'string'
+    && UUID_PATTERN.test(record.lease_id)) {
+    return { allowed: true, reason: null, leaseId: record.lease_id.toLowerCase() };
+  }
+  if (record.allowed === false
+    && typeof record.reason === 'string'
+    && record.lease_id === null
+    && (LIMIT_REASONS.has(record.reason) || CONTEXT_REASONS.has(record.reason))) {
+    return { allowed: false, reason: record.reason, leaseId: null };
+  }
+  return null;
 }
 
 function callRpc(
@@ -60,20 +84,17 @@ export async function acquirePipelineAdmission(
     throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE');
   }
 
-  const row = firstRow(result.data);
+  const row = parseAdmission(result.data);
   if (result.error || !row) {
     throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE');
   }
-  if (row.allowed !== true) {
-    if (row.reason === 'invalid_context') {
+  if (!row.allowed) {
+    if (CONTEXT_REASONS.has(row.reason)) {
       throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE');
     }
     throw new AdmissionControlError(429, 'PIPELINE_LIMITED');
   }
-  if (typeof row.lease_id !== 'string' || !row.lease_id) {
-    throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE');
-  }
-  return row.lease_id;
+  return row.leaseId;
 }
 
 export async function releasePipelineAdmission(
@@ -96,7 +117,7 @@ export async function claimPipelineAdmission(
     leaseId: string;
     actorUserId: string;
     orgId: string;
-    operation: 'stage2' | 'stage3' | 'retry';
+    operation: 'upload' | 'stage2' | 'stage3' | 'retry';
     rootExecutionId: string;
   },
 ): Promise<void> {

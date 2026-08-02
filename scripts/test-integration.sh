@@ -141,6 +141,28 @@ request POST "$BASE/api/flow/webhook/security-smoke-unknown" \
 check_status 'service credential reaches webhook routing' 404
 check_contains 'authenticated request receives routing result' 'Unknown webhook'
 
+echo '6. Known workflows enforce admission before telemetry or processing'
+for path in tender-metadata tender-details; do
+  request POST "$BASE/api/flow/webhook/$path" \
+    --header "Authorization: Bearer $SERVICE_KEY" \
+    --header 'Content-Type: application/json' \
+    --data '{}'
+  check_status "$path rejects a missing admission envelope" 503
+  check_contains "$path returns the safe admission code" 'ADMISSION_UNAVAILABLE'
+  check_no_metadata "$path denial contains no workflow metadata"
+done
+
+known_envelope='{"tender_id":"0b2f6f51-b91a-47db-b652-6a680a978efe","org_id":"3edb0931-87a3-45a6-a8f1-c1e87d539596","user_id":"fca2e00f-80ad-4c6c-afbb-392cf49eb7b6","admission_id":"c2b37af4-c299-4db7-859f-8423c3230d70","file_type":"pdf"}'
+for path in tender-metadata tender-details; do
+  request POST "$BASE/api/flow/webhook/$path" \
+    --header "Authorization: Bearer $SERVICE_KEY" \
+    --header 'Content-Type: application/json' \
+    --data "$known_envelope"
+  check_status "$path rejects an unclaimable admission" 503
+  check_contains "$path returns a redacted claim denial" 'ADMISSION_UNAVAILABLE'
+  check_no_metadata "$path claim denial contains no workflow metadata"
+done
+
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ "$FAIL" -eq 0 ]]; then
   echo 'ALL TESTS PASSED'
