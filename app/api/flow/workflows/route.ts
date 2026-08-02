@@ -1,7 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { isOperatorAuthorized } from '@/lib/auth';
 import { listWorkflows, loadWorkflow } from '@/lib/runner/loader';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!isOperatorAuthorized(request.headers)) {
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+
   try {
     const workflowIds = listWorkflows();
     
@@ -29,11 +37,11 @@ export async function GET() {
       }
     });
 
-    return NextResponse.json(workflows);
-  } catch (err) {
+    return NextResponse.json(workflows, { headers: { 'Cache-Control': 'private, no-store' } });
+  } catch {
     return NextResponse.json(
-      { error: String(err) },
-      { status: 500 }
+      { error: 'Workflow metadata unavailable' },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
   }
 }

@@ -5,8 +5,6 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   ArrowLeft,
-  ChevronDown,
-  ChevronUp,
   RotateCcw,
   ExternalLink,
   CheckCircle2,
@@ -21,14 +19,11 @@ import { workflowToMermaid, type NodeStatus } from '@/lib/workflow-to-mermaid';
 import type { WorkflowDefinition, WorkflowNode, WorkflowEdge } from '@/types/workflow';
 
 interface NodeRun {
-  id: string;
-  node_id: string;
-  node_type: string;
-  node_name: string;
+  execution_id: string;
+  stage: string;
   status: string;
-  input: object[];
-  output: object[];
-  error?: string;
+  safe_error_code?: string;
+  correlation_id: string;
   started_at: string;
   completed_at?: string;
   duration_ms?: number;
@@ -42,7 +37,8 @@ interface Execution {
   started_at: string;
   completed_at?: string;
   duration_ms?: number;
-  error?: string;
+  safe_error_code?: string;
+  correlation_id: string;
   node_runs: NodeRun[];
 }
 
@@ -126,74 +122,23 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-// Colorize JSON with syntax highlighting
-function colorizeJson(json: string): string {
-  // Replace keys (property names before colons)
-  let result = json.replace(/"([^"]+)":/g, '<span style="color: #2563EB">"$1"</span>:');
-  
-  // Replace string values (strings after colons, not already colored)
-  result = result.replace(/: "([^"]*)"/g, ': <span style="color: #059669">"$1"</span>');
-  
-  // Replace numbers
-  result = result.replace(/: (-?\d+\.?\d*)/g, ': <span style="color: #D97706">$1</span>');
-  
-  // Replace booleans
-  result = result.replace(/: (true|false)/g, ': <span style="color: #DC2626">$1</span>');
-  
-  // Replace null
-  result = result.replace(/: (null)/g, ': <span style="color: #71717A">$1</span>');
-  
-  return result;
-}
-
-function JsonViewer({ data, label }: { data: object[]; label: string }) {
-  const [showFull, setShowFull] = useState(false);
-  const jsonStr = JSON.stringify(data, null, 2);
-  const colorizedHtml = colorizeJson(jsonStr);
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-medium" style={{ color: '#71717A' }}>
-          {label}
-        </div>
-        <button
-          onClick={() => setShowFull(!showFull)}
-          className="text-xs px-2 py-0.5 rounded border hover:bg-zinc-100"
-          style={{ borderColor: '#E4E4E7', color: '#71717A' }}
-        >
-          {showFull ? 'Collapse' : 'Show full'}
-        </button>
-      </div>
-      <pre
-        className={`bg-zinc-50 p-3 rounded text-xs font-mono overflow-auto ${showFull ? '' : 'max-h-96'}`}
-        style={{ color: '#09090B' }}
-        dangerouslySetInnerHTML={{ __html: colorizedHtml }}
-      />
-    </div>
-  );
-}
-
 function NodeRunRow({ nodeRun }: { nodeRun: NodeRun }) {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <div
       className="border-b"
       style={{ borderColor: '#E4E4E7' }}
     >
       <div
-        className="flex items-center justify-between py-3 px-4 hover:bg-zinc-50 cursor-pointer"
-        onClick={() => setExpanded(!expanded)}
+        className="flex items-center justify-between py-3 px-4"
       >
         <div className="flex items-center gap-3">
           <NodeStatusIcon status={nodeRun.status} />
           <div>
             <div className="text-sm font-medium" style={{ color: '#09090B' }}>
-              {nodeRun.node_name}
+              {nodeRun.stage}
             </div>
             <div className="text-xs" style={{ color: '#71717A' }}>
-              {nodeRun.node_type}
+              Stage
             </div>
           </div>
         </div>
@@ -202,26 +147,14 @@ function NodeRunRow({ nodeRun }: { nodeRun: NodeRun }) {
           <span className="text-sm" style={{ color: '#71717A' }}>
             {formatDuration(nodeRun.duration_ms)}
           </span>
-          {expanded ? (
-            <ChevronUp className="w-4 h-4" style={{ color: '#71717A' }} />
-          ) : (
-            <ChevronDown className="w-4 h-4" style={{ color: '#71717A' }} />
-          )}
         </div>
       </div>
 
-      {nodeRun.status === 'error' && nodeRun.error && (
+      {nodeRun.status === 'error' && nodeRun.safe_error_code && (
         <div className="px-4 pb-3">
           <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
-            {nodeRun.error}
+            Error code: <code>{nodeRun.safe_error_code}</code>
           </div>
-        </div>
-      )}
-
-      {expanded && (
-        <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <JsonViewer data={nodeRun.input} label="Input" />
-          <JsonViewer data={nodeRun.output} label="Output" />
         </div>
       )}
     </div>
@@ -289,8 +222,8 @@ export default function ExecutionDetailPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      router.push(`/execution/${data.id}`);
+      if (!data.new_execution_id) throw new Error(data.error_code || 'Retry failed');
+      router.push(`/execution/${data.new_execution_id}`);
     } catch (err) {
       setError(String(err));
       setRetrying(false);
@@ -305,7 +238,7 @@ export default function ExecutionDetailPage() {
       // Map status string to NodeStatus type
       const status = run.status as NodeStatus;
       if (['pending', 'running', 'done', 'error'].includes(status)) {
-        statuses[run.node_id] = status;
+        statuses[run.stage] = status;
       }
     }
     return statuses;
@@ -432,6 +365,9 @@ export default function ExecutionDetailPage() {
                 <Clock className="w-4 h-4" />
                 {formatDuration(execution.duration_ms)}
               </span>
+              <span className="font-mono text-xs" title="Correlation ID">
+                Correlation: {execution.correlation_id}
+              </span>
               {execution.tender_id && (
                 <a
                   href={`${TENDER_SERVER}/tenders/${execution.tender_id}`}
@@ -446,7 +382,7 @@ export default function ExecutionDetailPage() {
               )}
             </div>
           </div>
-          {execution.status === 'error' && (
+          {execution.status === 'error' && ['tender-stage2-requirements', 'tender-stage3-evaluation'].includes(execution.workflow_id) && (
             <button
               onClick={handleRetry}
               disabled={retrying}
@@ -491,10 +427,12 @@ export default function ExecutionDetailPage() {
           </div>
         )}
 
-        {execution.status === 'error' && execution.error && (
+        {execution.status === 'error' && execution.safe_error_code && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
             <div className="font-medium">Execution Failed</div>
-            <div className="text-sm mt-1">{execution.error}</div>
+            <div className="text-sm mt-1">
+              Error code: <code>{execution.safe_error_code}</code>
+            </div>
           </div>
         )}
 
@@ -527,7 +465,7 @@ export default function ExecutionDetailPage() {
         ) : (
           <div className="border rounded" style={{ borderColor: '#E4E4E7', backgroundColor: '#FFFFFF' }}>
             {execution.node_runs.map((nodeRun) => (
-              <NodeRunRow key={nodeRun.id} nodeRun={nodeRun} />
+              <NodeRunRow key={`${nodeRun.stage}-${nodeRun.started_at}`} nodeRun={nodeRun} />
             ))}
           </div>
         )}

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isServiceAuthorized } from '@/lib/auth';
 import { getRunner } from '@/lib/runner';
 
 // Pipeline stages run synchronous LLM calls; allow long serverless execution on Vercel
@@ -8,17 +9,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ workflowId: string }> }
 ) {
-  const { workflowId } = await params;
-  
-  // Auth check — accept service role key or dedicated FLOWTENDER_API_KEY
-  const authHeader = request.headers.get('authorization') || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '');
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  const apiKey = process.env.FLOWTENDER_API_KEY || serviceKey;
-  
-  if (token !== apiKey && token !== serviceKey) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!isServiceAuthorized(request.headers)) {
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } },
+    );
   }
+
+  const { workflowId } = await params;
   
   let payload: Record<string, unknown> = {};
   try {
@@ -31,11 +29,14 @@ export async function POST(
   const runner = getRunner();
   
   try {
-    const result = await runner.run(workflowId, payload, { synchronous: true });
+    const result = await runner.run(workflowId, payload, {
+      synchronous: true,
+      correlationId: request.headers.get('x-correlation-id') ?? undefined,
+    });
     
     if (result.status === 'error') {
       return NextResponse.json(
-        { error: result.error, execution_id: result.execution_id },
+        { error_code: result.error_code, execution_id: result.execution_id },
         { status: 500 }
       );
     }
@@ -47,9 +48,9 @@ export async function POST(
     };
     
     return NextResponse.json(responseData);
-  } catch (err) {
+  } catch {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error_code: 'EXECUTION_FAILED' },
       { status: 500 }
     );
   }
