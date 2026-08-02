@@ -48,6 +48,8 @@ test('schema hardening is safe to retry and enforces one node row per execution 
 test('migration defines automatic seven-day TTL and an explicit confirmed purge', () => {
   const sql = migration();
   assert.match(sql, /interval '7 days'/i);
+  assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pg_cron;/);
+  assert.doesNotMatch(sql, /CREATE EXTENSION IF NOT EXISTS pg_cron\s+WITH SCHEMA/i);
   assert.match(sql, /cron\.schedule/);
   assert.match(sql, /purge_all_flow_telemetry\(confirmation text\)/);
   assert.match(sql, /confirmation IS DISTINCT FROM 'PURGE FLOWTENDER TELEMETRY'/);

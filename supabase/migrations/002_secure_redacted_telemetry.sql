@@ -285,7 +285,7 @@ $$;
 REVOKE ALL ON FUNCTION public.purge_all_flow_telemetry(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.purge_all_flow_telemetry(text) TO service_role;
 
-CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA extensions;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 DO $$
 BEGIN
