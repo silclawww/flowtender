@@ -1,16 +1,16 @@
 import { v4 as uuidv4 } from 'uuid';
-import { loadWorkflow } from './loader';
-import { codeExecutor } from '@/lib/nodes/code';
-import { httpRequestExecutor } from '@/lib/nodes/http-request';
-import { supabaseExecutors } from '@/lib/nodes/supabase';
-import { controlExecutors } from '@/lib/nodes/control';
-import { gaebParseExecutor } from '@/lib/nodes/gaeb';
-import { createServiceClient } from '@/lib/supabase/service';
+import { loadWorkflow } from './loader.ts';
+import { codeExecutor } from '../nodes/code.ts';
+import { httpRequestExecutor } from '../nodes/http-request.ts';
+import { supabaseExecutors } from '../nodes/supabase.ts';
+import { controlExecutors } from '../nodes/control.ts';
+import { gaebParseExecutor } from '../nodes/gaeb.ts';
+import { createServiceClient } from '../supabase/service.ts';
 import {
   isTelemetryPersistenceError,
   persistExactlyOneTelemetryRow,
   TelemetryPersistenceError,
-} from '@/lib/telemetry-persistence';
+} from '../telemetry-persistence.ts';
 import {
   completeExecutionTelemetry,
   completeNodeTelemetry,
@@ -18,7 +18,8 @@ import {
   createNodeTelemetry,
   normalizeCorrelationId,
   type SafeErrorCode,
-} from '@/lib/telemetry';
+} from '../telemetry.ts';
+import { requireWorkflowTenantContext } from '../tenant-context.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -82,10 +83,15 @@ export interface ExecutionResult {
 
 export class WorkflowRunner {
   private readonly supabase: ReturnType<typeof createServiceClient>;
+  private readonly workflowLoader: typeof loadWorkflow;
 
-  constructor(supabase?: ReturnType<typeof createServiceClient>) {
+  constructor(
+    supabase?: ReturnType<typeof createServiceClient>,
+    workflowLoader: typeof loadWorkflow = loadWorkflow,
+  ) {
     try {
       this.supabase = supabase ?? createServiceClient();
+      this.workflowLoader = workflowLoader;
     } catch {
       throw new TelemetryPersistenceError();
     }
@@ -96,6 +102,8 @@ export class WorkflowRunner {
     triggerPayload: Record<string, unknown>,
     options: RunOptions = {}
   ): Promise<ExecutionResult> {
+    requireWorkflowTenantContext(workflowId, triggerPayload);
+
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
@@ -124,7 +132,7 @@ export class WorkflowRunner {
     try {
       let workflow: ReturnType<typeof loadWorkflow>;
       try {
-        workflow = loadWorkflow(workflowId);
+        workflow = this.workflowLoader(workflowId);
       } catch {
         executionErrorCode = 'WORKFLOW_LOAD_FAILED';
         throw new Error('Workflow load failed');
