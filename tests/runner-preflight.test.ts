@@ -8,6 +8,8 @@ import type { WorkflowDefinition } from '../types/workflow.ts';
 
 const tenderId = '0b2f6f51-b91a-47db-b652-6a680a978efe';
 const orgId = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
+const actorId = 'fca2e00f-80ad-4c6c-afbb-392cf49eb7b6';
+const admissionId = 'c2b37af4-c299-4db7-859f-8423c3230d70';
 const otherTenderId = '961737c9-51a7-419f-a900-962a30a2df5b';
 const otherOrgId = 'c63aaab6-60ff-4297-b37a-6e443e5198be';
 
@@ -37,16 +39,22 @@ for (const workflowId of [
       {},
       { tender_id: tenderId },
       { org_id: orgId },
+      { tender_id: tenderId, org_id: orgId, user_id: actorId },
       { tender_id: 'customer-content-not-a-uuid', org_id: orgId },
+      { tender_id: tenderId, org_id: orgId, user_id: 'customer-content-not-a-uuid', admission_id: admissionId },
       { body: { tender_id: tenderId, org_id: 'customer-content-not-a-uuid' } },
       {
         tender_id: tenderId,
         org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
         body: { tender_id: otherTenderId, org_id: orgId },
       },
       {
         tender_id: tenderId,
         org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
         body: { tender_id: tenderId, org_id: otherOrgId },
       },
     ]) {
@@ -79,15 +87,17 @@ test('valid direct and wrapped Stage 2/3 tenant contexts pass preflight', () => 
     assert.deepEqual(preflightWorkflowPayload(workflowId, {
       tender_id: tenderId,
       org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
     }), {
-      payload: { tender_id: tenderId, org_id: orgId },
-      tenantContext: { tender_id: tenderId, org_id: orgId },
+      payload: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+      tenantContext: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
     });
     assert.deepEqual(preflightWorkflowPayload(workflowId, {
-      body: { tender_id: tenderId, org_id: orgId },
+      body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
     }), {
-      payload: { tender_id: tenderId, org_id: orgId },
-      tenantContext: { tender_id: tenderId, org_id: orgId },
+      payload: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+      tenantContext: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
     });
   }
 });
@@ -106,6 +116,9 @@ function recordingClient() {
   return {
     inserts,
     client: {
+      async rpc() {
+        return { data: true, error: null };
+      },
       from(table: string) {
         return {
           insert(value: Record<string, unknown>) {
@@ -141,12 +154,14 @@ test('valid Stage 2/3 forms record and process the same canonical identifiers', 
     'tender-stage3-evaluation',
   ]) {
     for (const payload of [
-      { tender_id: tenderId, org_id: orgId, ignored: 'top-level-extra' },
-      { body: { tender_id: tenderId, org_id: orgId, ignored: 'body-extra' } },
+      { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId, ignored: 'top-level-extra' },
+      { body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId, ignored: 'body-extra' } },
       {
         tender_id: tenderId.toUpperCase(),
         org_id: orgId.toUpperCase(),
-        body: { tender_id: tenderId, org_id: orgId },
+        user_id: actorId.toUpperCase(),
+        admission_id: admissionId.toUpperCase(),
+        body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
       },
     ]) {
       const database = recordingClient();
@@ -154,9 +169,17 @@ test('valid Stage 2/3 forms record and process the same canonical identifiers', 
       const result = await runner.run(workflowId, payload);
 
       assert.equal(result.status, 'done');
-      assert.deepEqual(result.response_payload, [{ json: { tender_id: tenderId, org_id: orgId } }]);
+      assert.deepEqual(result.response_payload, [{ json: {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+      } }]);
       const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
       assert.equal(execution?.value.tender_id, tenderId);
+      assert.equal(execution?.value.correlation_id, execution?.value.id);
+      assert.equal('actor_user_id' in (execution?.value ?? {}), false);
+      assert.equal('org_id' in (execution?.value ?? {}), false);
     }
   }
 });

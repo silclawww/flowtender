@@ -36,6 +36,8 @@ psql "${psql_args[@]}" \
   --file "$repo_dir/tests/sql/migration-db-seed-legacy.sql" \
   --file "$repo_dir/supabase/migrations/002_secure_redacted_telemetry.sql" \
   --file "$repo_dir/supabase/migrations/002_secure_redacted_telemetry.sql" \
+  --file "$repo_dir/supabase/migrations/003_pipeline_admission.sql" \
+  --file "$repo_dir/supabase/migrations/003_pipeline_admission.sql" \
   --file "$repo_dir/tests/sql/migration-db-assertions.sql"
 
 echo "migration DB test passed"

@@ -1,5 +1,6 @@
 import { isServiceAuthorized } from './auth.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
+import { AdmissionControlError } from './admission-control.ts';
 
 interface WebhookRunResult {
   execution_id: string;
@@ -87,6 +88,12 @@ export async function handleWebhookRequest(
     };
     return Response.json(responseData, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
+    if (error instanceof AdmissionControlError) {
+      return Response.json(
+        { error_code: error.code },
+        { status: error.status, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
     if (isTelemetryPersistenceError(error)) {
       return Response.json(
         { error_code: error.code },

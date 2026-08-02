@@ -146,6 +146,15 @@ assertions with `npm run test:migration-db`; the script refuses non-local databa
 and requires `FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES` confirmation alongside
 `FLOWTENDER_TEST_DATABASE_URL`.
 
+### Pipeline admission limits
+
+Migration `003_pipeline_admission.sql` provides the atomic per-user,
+per-organisation, and retry-root admission gate shared by Tenderly and Flowtender.
+Use [`docs/pipeline-admission-rollout.md`](./docs/pipeline-admission-rollout.md) for
+the limit definitions, retention boundary, deployment order, and production smoke
+checks. Do not deploy the two application changes independently outside that
+maintenance procedure.
+
 ### Production
 
 ```bash

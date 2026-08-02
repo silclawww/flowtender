@@ -20,6 +20,7 @@ import {
   type SafeErrorCode,
 } from '../telemetry.ts';
 import { preflightWorkflowPayload } from '../tenant-context.ts';
+import { claimPipelineAdmission } from '../admission-control.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -71,6 +72,7 @@ export interface RunOptions {
   synchronous?: boolean;  // If true, wait for 'respond' node before returning
   timeoutMs?: number;     // Max execution time (default: 120000ms)
   correlationId?: string; // Opaque request identifier; unsafe values are discarded
+  retryRootExecutionId?: string; // Immutable root used for retry-cost accounting
 }
 
 export interface ExecutionResult {
@@ -108,12 +110,25 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = normalizeCorrelationId(options.correlationId, executionId);
+    const correlationId = preflight.tenantContext
+      ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
+      : normalizeCorrelationId(options.correlationId, executionId);
 
     // Detect tender_id in payload
     const tender_id = preflight.tenantContext?.tender_id
       ?? (workflowPayload.tender_id as string | undefined)
       ?? ((workflowPayload.body as Record<string,unknown>)?.tender_id as string | undefined);
+    if (preflight.tenantContext) {
+      await claimPipelineAdmission(this.supabase, {
+        leaseId: preflight.tenantContext.admission_id,
+        actorUserId: preflight.tenantContext.user_id,
+        orgId: preflight.tenantContext.org_id,
+        operation: options.retryRootExecutionId
+          ? 'retry'
+          : workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
+        rootExecutionId: correlationId,
+      });
+    }
 
     // Create execution record
     await persistExactlyOneTelemetryRow(() => this.supabase

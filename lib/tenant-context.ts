@@ -8,6 +8,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 export interface TenantContext {
   tender_id: string;
   org_id: string;
+  user_id: string;
+  admission_id: string;
 }
 
 interface WorkflowPayloadPreflight {
@@ -56,6 +58,8 @@ export function preflightWorkflowPayload(
   const tenantContext = {
     tender_id: canonicalUuid(root.tender_id, wrapped?.tender_id),
     org_id: canonicalUuid(root.org_id, wrapped?.org_id),
+    user_id: canonicalUuid(root.user_id, wrapped?.user_id),
+    admission_id: canonicalUuid(root.admission_id, wrapped?.admission_id),
   };
   return { payload: tenantContext, tenantContext };
 }

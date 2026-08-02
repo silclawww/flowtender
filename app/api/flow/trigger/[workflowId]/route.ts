@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isServiceAuthorized } from '@/lib/auth';
 import { getRunner } from '@/lib/runner';
 import { isTelemetryPersistenceError } from '@/lib/telemetry-persistence';
+import { AdmissionControlError } from '@/lib/admission-control';
 
 // Pipeline stages run synchronous LLM calls; allow long serverless execution on Vercel
 export const maxDuration = 300;
@@ -49,6 +50,12 @@ export async function POST(
     
     return NextResponse.json(responseData, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
+    if (error instanceof AdmissionControlError) {
+      return NextResponse.json(
+        { error_code: error.code },
+        { status: error.status, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
     if (isTelemetryPersistenceError(error)) {
       return NextResponse.json(
         { error_code: error.code },

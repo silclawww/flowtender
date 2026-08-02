@@ -3,11 +3,14 @@ import test from 'node:test';
 
 import { handleWebhookRequest } from '../lib/webhook-handler.ts';
 import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
+import { AdmissionControlError } from '../lib/admission-control.ts';
 
 const SERVICE_KEY = 'service-secret-with-enough-entropy';
 const OPERATOR_KEY = 'operator-secret-with-enough-entropy';
 const TENDER_ID = '0b2f6f51-b91a-47db-b652-6a680a978efe';
 const ORG_ID = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
+const USER_ID = 'fca2e00f-80ad-4c6c-afbb-392cf49eb7b6';
+const ADMISSION_ID = 'c2b37af4-c299-4db7-859f-8423c3230d70';
 
 function webhookRequest(token?: string): Request {
   return new Request('https://flowtender.example/api/flow/webhook/tender-details', {
@@ -16,7 +19,12 @@ function webhookRequest(token?: string): Request {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ tender_id: TENDER_ID, org_id: ORG_ID }),
+    body: JSON.stringify({
+      tender_id: TENDER_ID,
+      org_id: ORG_ID,
+      user_id: USER_ID,
+      admission_id: ADMISSION_ID,
+    }),
   });
 }
 
@@ -76,7 +84,12 @@ test('the dedicated service credential reaches the expected processing workflow'
 
   assert.equal(response.status, 200);
   assert.equal(calledWorkflow, 'tender-stage2-requirements');
-  assert.deepEqual(calledPayload, { tender_id: TENDER_ID, org_id: ORG_ID });
+  assert.deepEqual(calledPayload, {
+    tender_id: TENDER_ID,
+    org_id: ORG_ID,
+    user_id: USER_ID,
+    admission_id: ADMISSION_ID,
+  });
   assert.deepEqual(await response.json(), { processing_status: 'details_ready' });
 });
 
@@ -96,4 +109,18 @@ test('telemetry persistence failures return a redacted no-store service response
   assert.deepEqual(await response.json(), {
     error_code: 'TELEMETRY_PERSISTENCE_FAILED',
   });
+});
+
+test('missing or unclaimable admission state prevents workflow execution safely', async () => {
+  const response = await handleWebhookRequest(
+    webhookRequest(SERVICE_KEY),
+    'tender-details',
+    async () => { throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE'); },
+    SERVICE_KEY,
+    OPERATOR_KEY,
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), { error_code: 'ADMISSION_UNAVAILABLE' });
 });

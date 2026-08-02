@@ -8,7 +8,7 @@
       "type": "code",
       "name": "Trigger Input",
       "config": {
-        "code": "const body = $json.body && typeof $json.body === 'object' && !Array.isArray($json.body) ? $json.body : $json;\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nif (typeof body.tender_id !== 'string' || !uuid.test(body.tender_id) || typeof body.org_id !== 'string' || !uuid.test(body.org_id)) {\n  throw new Error('INVALID_TENANT_CONTEXT');\n}\nreturn [{ json: { tender_id: body.tender_id, org_id: body.org_id } }];"
+        "code": "const body = $json.body && typeof $json.body === 'object' && !Array.isArray($json.body) ? $json.body : $json;\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nif (typeof body.tender_id !== 'string' || !uuid.test(body.tender_id) || typeof body.org_id !== 'string' || !uuid.test(body.org_id) || typeof body.user_id !== 'string' || !uuid.test(body.user_id) || typeof body.admission_id !== 'string' || !uuid.test(body.admission_id)) {\n  throw new Error('INVALID_TENANT_CONTEXT');\n}\nreturn [{ json: { tender_id: body.tender_id, org_id: body.org_id, user_id: body.user_id } }];"
       }
     },
     {

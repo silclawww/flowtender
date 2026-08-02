@@ -20,6 +20,7 @@ export function MermaidDiagram({ chart, className }: MermaidDiagramProps) {
       m.default.initialize({
         startOnLoad: false,
         theme: 'neutral',
+        securityLevel: 'strict',
         flowchart: { curve: 'basis' },
       });
       const id = `mermaid-${Math.random().toString(36).slice(2)}`;

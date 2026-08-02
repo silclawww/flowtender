@@ -8,6 +8,8 @@ import type { WorkflowDefinition, WorkflowNode } from '../types/workflow.ts';
 
 const tenderId = '0b2f6f51-b91a-47db-b652-6a680a978efe';
 const orgId = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
+const actorId = 'fca2e00f-80ad-4c6c-afbb-392cf49eb7b6';
+const admissionId = 'c2b37af4-c299-4db7-859f-8423c3230d70';
 
 function loadWorkflow(file: string): WorkflowDefinition {
   return JSON.parse(
@@ -35,16 +37,20 @@ for (const file of [
 ]) {
   test(`${file} accepts only a complete UUID tenant context`, async () => {
     const workflow = loadWorkflow(file);
-    const output = await runTrigger(workflow, { body: { tender_id: tenderId, org_id: orgId } });
+    const output = await runTrigger(workflow, {
+      body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
+    });
 
-    assert.deepEqual(output, [[{ json: { tender_id: tenderId, org_id: orgId } }]]);
+    assert.deepEqual(output, [[{ json: { tender_id: tenderId, org_id: orgId, user_id: actorId } }]]);
 
     for (const invalid of [
       {},
       { tender_id: tenderId },
       { org_id: orgId },
+      { tender_id: tenderId, org_id: orgId, user_id: actorId },
       { tender_id: 'customer-content-not-a-uuid', org_id: orgId },
       { tender_id: tenderId, org_id: 'customer-content-not-a-uuid' },
+      { tender_id: tenderId, org_id: orgId, user_id: 'customer-content-not-a-uuid', admission_id: admissionId },
     ]) {
       await assert.rejects(
         () => runTrigger(workflow, invalid),
