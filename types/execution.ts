@@ -5,15 +5,11 @@ export interface ExecutionItem {
 }
 
 export interface NodeRun {
-  id: string;
   execution_id: string;
-  node_id: string;
-  node_type: string;
-  node_name: string;
-  input: ExecutionItem[];
-  output: ExecutionItem[];
+  stage: string;
   status: ExecutionStatus;
-  error?: string;
+  safe_error_code?: string;
+  correlation_id: string;
   started_at: string;
   completed_at?: string;
   duration_ms?: number;
@@ -22,9 +18,10 @@ export interface NodeRun {
 export interface WorkflowExecution {
   id: string;
   workflow_id: string;
-  trigger_payload: Record<string, unknown>;
   status: ExecutionStatus;
   tender_id?: string;
+  safe_error_code?: string;
+  correlation_id: string;
   started_at: string;
   completed_at?: string;
   duration_ms?: number;

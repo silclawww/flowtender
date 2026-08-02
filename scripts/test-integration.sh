@@ -1,67 +1,151 @@
-#!/bin/bash
-# Integration test for flowtender
-# Usage: ./scripts/test-integration.sh [host:port]
-# Default: localhost:3845
+#!/usr/bin/env bash
+# Non-destructive security smoke test for a running Flowtender instance.
+# Usage: FLOWTENDER_OPERATOR_KEY=... FLOWTENDER_API_KEY=... ./scripts/test-integration.sh [base-url]
+
+set -u
 
 BASE="${1:-http://localhost:3845}"
+OPERATOR_KEY="${FLOWTENDER_OPERATOR_KEY:-}"
+SERVICE_KEY="${FLOWTENDER_API_KEY:-}"
 PASS=0
 FAIL=0
+RESPONSE_BODY=''
+RESPONSE_STATUS=''
 
-check() {
+if [[ -z "$OPERATOR_KEY" || -z "$SERVICE_KEY" ]]; then
+  echo 'FLOWTENDER_OPERATOR_KEY and FLOWTENDER_API_KEY are required.' >&2
+  exit 2
+fi
+
+if [[ "$OPERATOR_KEY" == "$SERVICE_KEY" ]]; then
+  echo 'Operator and service keys must be different.' >&2
+  exit 2
+fi
+
+request() {
+  local method="$1"
+  local url="$2"
+  shift 2
+  local response
+  response=$(curl --silent --show-error --request "$method" "$url" "$@" --write-out $'\n%{http_code}')
+  RESPONSE_STATUS="${response##*$'\n'}"
+  RESPONSE_BODY="${response%$'\n'*}"
+}
+
+check_status() {
   local name="$1"
   local expected="$2"
-  local actual="$3"
-  if echo "$actual" | grep -q "$expected"; then
-    echo "  ✓ $name"
+  if [[ "$RESPONSE_STATUS" == "$expected" ]]; then
+    echo "  ✓ $name ($RESPONSE_STATUS)"
     PASS=$((PASS + 1))
   else
-    echo "  ✗ $name (expected '$expected', got: ${actual:0:100})"
+    echo "  ✗ $name (expected $expected, got $RESPONSE_STATUS: ${RESPONSE_BODY:0:120})"
     FAIL=$((FAIL + 1))
   fi
 }
 
-echo "=== flowtender integration tests ==="
-echo "Target: $BASE"
-echo ""
-
-echo "1. Health check"
-resp=$(curl -s "$BASE/api/flow/webhook/tender-metadata")
-check "GET /api/flow/webhook/* returns ok" '"ok"' "$resp"
-
-echo ""
-echo "2. Executions list"
-resp=$(curl -s "$BASE/api/flow/executions")
-check "GET /api/flow/executions returns array" '\[' "$resp"
-
-echo ""
-echo "3. Workflow list check (verify JSON files exist)"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKFLOWS_DIR="$(dirname "$SCRIPT_DIR")/workflows"
-for wf in tender-stage1-gaeb tender-stage1-pdf tender-stage2-requirements tender-stage3-evaluation; do
-  if [ -f "$WORKFLOWS_DIR/$wf.json" ]; then
-    echo "  ✓ workflows/$wf.json exists"
+check_contains() {
+  local name="$1"
+  local expected="$2"
+  if [[ "$RESPONSE_BODY" == *"$expected"* ]]; then
+    echo "  ✓ $name"
     PASS=$((PASS + 1))
   else
-    echo "  ✗ workflows/$wf.json MISSING"
+    echo "  ✗ $name (body: ${RESPONSE_BODY:0:120})"
     FAIL=$((FAIL + 1))
   fi
+}
+
+check_no_metadata() {
+  local name="$1"
+  if [[ ! "$RESPONSE_BODY" =~ (execution_id|workflow_id|tender_id|customer|node_runs) ]]; then
+    echo "  ✓ $name"
+    PASS=$((PASS + 1))
+  else
+    echo "  ✗ $name leaked metadata: ${RESPONSE_BODY:0:120}"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo '=== Flowtender pilot security smoke ==='
+echo "Target: $BASE"
+
+echo '1. Public health only'
+request GET "$BASE/api/flow/health"
+check_status 'health is public' 200
+check_contains 'health reports ok' '"status":"ok"'
+check_no_metadata 'health contains no tracking metadata'
+
+request GET "$BASE/api/flow/webhook/tender-metadata"
+check_status 'webhook GET is not a public health alias' 405
+
+echo '2. Inspector pages fail closed'
+for path in / /workflows /execution/00000000-0000-4000-8000-000000000000; do
+  request GET "$BASE$path"
+  check_status "unauthenticated $path" 401
+  check_no_metadata "unauthenticated $path contains no metadata"
 done
 
-echo ""
-echo "4. Stage 1 webhook (GAEB with minimal payload)"
-TENDER_ID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-resp=$(curl -s -X POST "$BASE/api/flow/webhook/tender-metadata" \
-  -H "Content-Type: application/json" \
-  -d "{\"tender_id\":\"$TENDER_ID\",\"file_type\":\"archive\",\"org_id\":\"4013e1c5-8f38-4c66-8085-58b09e1c9b33\",\"user_id\":\"b2f40a4d-1b9b-432d-9b4a-8dc30353e849\",\"gaeb_files\":[],\"documents\":[],\"has_plans\":false,\"archive_summary\":{},\"source_filename\":\"test.avasign\"}" \
-  --max-time 30)
-check "Stage 1 GAEB returns processing_status" 'metadata_ready\|execution_id' "$resp"
+echo '3. Inspector APIs fail closed before lookup or retry'
+request GET "$BASE/api/flow/executions"
+check_status 'unauthenticated execution list' 401
+check_no_metadata 'execution list denial contains no metadata'
 
-echo ""
+request GET "$BASE/api/flow/status/00000000-0000-4000-8000-000000000000"
+check_status 'unauthenticated guessed execution detail' 401
+check_no_metadata 'execution detail denial contains no metadata'
+
+request POST "$BASE/api/flow/retry/00000000-0000-4000-8000-000000000000"
+check_status 'unauthenticated guessed retry' 401
+check_no_metadata 'retry denial contains no metadata'
+
+request GET "$BASE/api/flow/workflows"
+check_status 'unauthenticated workflow list' 401
+check_no_metadata 'workflow denial contains no metadata'
+
+request GET "$BASE/api/flow/workflows/tender-stage2-requirements"
+check_status 'unauthenticated workflow detail' 401
+check_no_metadata 'workflow detail denial contains no metadata'
+
+echo '4. Operator and service credentials stay separated'
+request GET "$BASE/api/flow/executions" --header "Authorization: Bearer $SERVICE_KEY"
+check_status 'service key cannot inspect executions' 401
+
+request POST "$BASE/api/flow/webhook/tender-details" \
+  --header "Authorization: Bearer $OPERATOR_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{}'
+check_status 'operator key cannot invoke webhook' 401
+
+request GET "$BASE/workflows" --user "operator:$OPERATOR_KEY"
+check_status 'operator Basic auth can open inspector page' 200
+
+request GET "$BASE/api/flow/workflows" --user "operator:$OPERATOR_KEY"
+check_status 'browser Basic auth carries into inspector API fetches' 200
+
+request GET "$BASE/api/flow/workflows" --header "Authorization: Bearer $OPERATOR_KEY"
+check_status 'operator bearer can inspect safe workflow metadata' 200
+
+echo '5. Dedicated webhook auth regression'
+request POST "$BASE/api/flow/webhook/tender-details" \
+  --header 'Content-Type: application/json' \
+  --data '{}'
+check_status 'unauthenticated webhook POST' 401
+
+# An authenticated unknown path proves the service credential passed auth and reached
+# webhook routing without starting a workflow or mutating production data.
+request POST "$BASE/api/flow/webhook/security-smoke-unknown" \
+  --header "Authorization: Bearer $SERVICE_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{}'
+check_status 'service credential reaches webhook routing' 404
+check_contains 'authenticated request receives routing result' 'Unknown webhook'
+
 echo "=== Results: $PASS passed, $FAIL failed ==="
-if [ $FAIL -eq 0 ]; then
-  echo "ALL TESTS PASSED"
+if [[ "$FAIL" -eq 0 ]]; then
+  echo 'ALL TESTS PASSED'
   exit 0
-else
-  echo "SOME TESTS FAILED"
-  exit 1
 fi
+
+echo 'SOME TESTS FAILED'
+exit 1

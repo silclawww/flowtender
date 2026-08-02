@@ -13,10 +13,21 @@ const BASE_URL = process.env.FLOWTENDER_URL || 'http://localhost:3845';
 const args = process.argv.slice(2);
 const cmd = args[0];
 
-async function apiFetch(path: string, method = 'GET', body?: unknown) {
+async function apiFetch(
+  path: string,
+  method = 'GET',
+  body?: unknown,
+  credential: 'operator' | 'service' = 'operator',
+) {
+  const token = credential === 'service'
+    ? process.env.FLOWTENDER_API_KEY
+    : process.env.FLOWTENDER_OPERATOR_KEY;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -51,12 +62,11 @@ Commands:
   }
 
   if (cmd === 'list-workflows') {
-    const wfs = await apiFetch('/api/flow/workflows') as Array<{id:string,name:string,description:string,nodes?:unknown[]}>;
+    const wfs = await apiFetch('/api/flow/workflows') as Array<{id:string,name:string,description:string,nodeCount:number}>;
     console.log(`\n${wfs.length} workflows:\n`);
     for (const wf of wfs) {
       console.log(`  ${wf.id}`);
-      const nodeCount = wf.nodes?.length ?? 0;
-      console.log(`    ${wf.name || '(unnamed)'} — ${nodeCount} nodes`);
+      console.log(`    ${wf.name || '(unnamed)'} — ${wf.nodeCount} nodes`);
       if (wf.description) console.log(`    ${wf.description}`);
     }
     return;
@@ -68,7 +78,7 @@ Commands:
     const payloadIdx = args.indexOf('--payload');
     const payload = payloadIdx >= 0 ? JSON.parse(args[payloadIdx + 1]) : {};
     console.log(`Running workflow: ${workflowId}...`);
-    const result = await apiFetch(`/api/flow/trigger/${workflowId}`, 'POST', payload);
+    const result = await apiFetch(`/api/flow/trigger/${workflowId}`, 'POST', payload, 'service');
     console.log('\nResult:', JSON.stringify(result, null, 2));
     return;
   }
@@ -79,13 +89,13 @@ Commands:
     const limitIdx = args.indexOf('--limit');
     const limit = limitIdx >= 0 ? args[limitIdx + 1] : '10';
     const url = `/api/flow/executions?${status ? `status=${status}&` : ''}limit=${limit}`;
-    const execs = await apiFetch(url) as Array<{id:string,workflow_id:string,status:string,duration_ms?:number,started_at:string,tender_id?:string,error?:string}>;
+    const execs = await apiFetch(url) as Array<{id:string,workflow_id:string,status:string,duration_ms?:number,started_at:string,tender_id?:string,safe_error_code?:string}>;
     console.log(`\n${execs.length} executions:\n`);
     for (const ex of execs) {
       const statusIcon = ex.status === 'done' ? '✓' : ex.status === 'error' ? '✗' : '⋯';
       console.log(`  ${statusIcon} ${ex.id.slice(0,8)} | ${ex.workflow_id} | ${formatDuration(ex.duration_ms)} | ${formatDate(ex.started_at)}`);
       if (ex.tender_id) console.log(`    tender: ${ex.tender_id}`);
-      if (ex.error) console.log(`    error: ${ex.error}`);
+      if (ex.safe_error_code) console.log(`    error code: ${ex.safe_error_code}`);
     }
     return;
   }
@@ -93,7 +103,7 @@ Commands:
   if (cmd === 'show') {
     const execId = args[1];
     if (!execId) { console.error('Usage: show <executionId>'); process.exit(1); }
-    const exec = await apiFetch(`/api/flow/status/${execId}`) as {id:string,workflow_id:string,status:string,duration_ms?:number,node_runs:Array<{node_id:string,node_name:string,status:string,duration_ms?:number,error?:string,input:unknown[],output:unknown[][]}>};
+    const exec = await apiFetch(`/api/flow/status/${execId}`) as {id:string,workflow_id:string,status:string,duration_ms?:number,node_runs:Array<{stage:string,status:string,duration_ms?:number,safe_error_code?:string}>};
     console.log(`\nExecution: ${exec.id}`);
     console.log(`Workflow:  ${exec.workflow_id}`);
     console.log(`Status:    ${exec.status}`);
@@ -101,8 +111,8 @@ Commands:
     console.log('Node runs:');
     for (const nr of (exec.node_runs || [])) {
       const icon = nr.status === 'done' ? '✓' : nr.status === 'error' ? '✗' : '⋯';
-      console.log(`  ${icon} [${nr.node_id}] ${nr.node_name} — ${formatDuration(nr.duration_ms)}`);
-      if (nr.error) console.log(`    ERROR: ${nr.error}`);
+      console.log(`  ${icon} [${nr.stage}] — ${formatDuration(nr.duration_ms)}`);
+      if (nr.safe_error_code) console.log(`    ERROR CODE: ${nr.safe_error_code}`);
     }
     return;
   }

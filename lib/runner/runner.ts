@@ -6,6 +6,19 @@ import { supabaseExecutors } from '@/lib/nodes/supabase';
 import { controlExecutors } from '@/lib/nodes/control';
 import { gaebParseExecutor } from '@/lib/nodes/gaeb';
 import { createServiceClient } from '@/lib/supabase/service';
+import {
+  isTelemetryPersistenceError,
+  persistExactlyOneTelemetryRow,
+  TelemetryPersistenceError,
+} from '@/lib/telemetry-persistence';
+import {
+  completeExecutionTelemetry,
+  completeNodeTelemetry,
+  createExecutionTelemetry,
+  createNodeTelemetry,
+  normalizeCorrelationId,
+  type SafeErrorCode,
+} from '@/lib/telemetry';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -56,18 +69,27 @@ const NODE_EXECUTORS: Record<string, NodeExecutor> = {
 export interface RunOptions {
   synchronous?: boolean;  // If true, wait for 'respond' node before returning
   timeoutMs?: number;     // Max execution time (default: 120000ms)
+  correlationId?: string; // Opaque request identifier; unsafe values are discarded
 }
 
 export interface ExecutionResult {
   execution_id: string;
   status: 'done' | 'error';
   response_payload?: ExecutionItem[];  // Payload from 'respond' node
-  error?: string;
+  error_code?: SafeErrorCode;
   duration_ms: number;
 }
 
 export class WorkflowRunner {
-  private supabase = createServiceClient();
+  private readonly supabase: ReturnType<typeof createServiceClient>;
+
+  constructor(supabase?: ReturnType<typeof createServiceClient>) {
+    try {
+      this.supabase = supabase ?? createServiceClient();
+    } catch {
+      throw new TelemetryPersistenceError();
+    }
+  }
 
   async run(
     workflowId: string,
@@ -77,26 +99,36 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
+    const correlationId = normalizeCorrelationId(options.correlationId, executionId);
 
     // Detect tender_id in payload
     const tender_id = triggerPayload.tender_id as string | undefined ||
                       (triggerPayload.body as Record<string,unknown>)?.tender_id as string | undefined;
 
     // Create execution record
-    await this.supabase.from('flow_executions').insert({
-      id: executionId,
-      workflow_id: workflowId,
-      trigger_payload: triggerPayload,
-      status: 'running',
-      tender_id: tender_id || null,
-      started_at: new Date().toISOString(),
-    } as any);
+    await persistExactlyOneTelemetryRow(() => this.supabase
+      .from('flow_executions')
+      .insert(createExecutionTelemetry({
+        executionId,
+        workflowId,
+        tenderId: tender_id,
+        correlationId,
+        startedAt: new Date().toISOString(),
+      }) as any)
+      .select('id'));
 
     let responsePayload: ExecutionItem[] | undefined;
-    let executionError: string | undefined;
+    let executionErrorCode: SafeErrorCode | undefined;
+    let telemetryFailure: TelemetryPersistenceError | undefined;
 
     try {
-      const workflow = loadWorkflow(workflowId);
+      let workflow: ReturnType<typeof loadWorkflow>;
+      try {
+        workflow = loadWorkflow(workflowId);
+      } catch {
+        executionErrorCode = 'WORKFLOW_LOAD_FAILED';
+        throw new Error('Workflow load failed');
+      }
       
       // Build adjacency: nodeId → list of { to_node_id, to_port, from_port }
       const outEdges = new Map<string, Array<{ to: string; from_output: number; to_input: number }>>();
@@ -131,27 +163,28 @@ export class WorkflowRunner {
         if (executed.has(node.id)) continue;
         executed.add(node.id);
 
-        const nodeRunId = uuidv4();
         const nodeStart = Date.now();
 
         // Mark node as running
-        await this.supabase.from('flow_node_runs').insert({
-          id: nodeRunId,
-          execution_id: executionId,
-          node_id: node.id,
-          node_type: node.type,
-          node_name: node.name,
-          input: input,
-          status: 'running',
-          started_at: new Date().toISOString(),
-        } as any);
+        await persistExactlyOneTelemetryRow(() => this.supabase
+          .from('flow_node_runs')
+          .insert(createNodeTelemetry({
+            executionId,
+            stage: node.id,
+            correlationId,
+            startedAt: new Date().toISOString(),
+          }) as any)
+          .select('execution_id, stage'));
 
         let outputs: ExecutionItem[][] = [];
-        let nodeError: string | undefined;
+        let nodeErrorCode: SafeErrorCode | undefined;
 
         try {
           const executor = NODE_EXECUTORS[node.type];
-          if (!executor) throw new Error(`Unknown node type: ${node.type}`);
+          if (!executor) {
+            nodeErrorCode = 'UNKNOWN_NODE_TYPE';
+            throw new Error('Unknown node type');
+          }
           
           outputs = await executeWithRetry(executor, node.config, input, context, node.retry);
           
@@ -163,28 +196,32 @@ export class WorkflowRunner {
           // Store this node's output in context (port 0 output)
           context.set(node.id, outputs[0] || []);
 
-        } catch (err) {
-          nodeError = err instanceof Error ? err.message : String(err);
+        } catch {
+          nodeErrorCode ??= 'NODE_EXECUTION_FAILED';
           outputs = [[]];
           context.set(node.id, []);
-          console.error(`[flowtender] Node ${node.id} (${node.type}) error:`, nodeError);
+          console.error(`[flowtender] stage ${node.id} failed with ${nodeErrorCode}`);
         }
 
         const nodeDuration = Date.now() - nodeStart;
 
         // Update node run record
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.supabase.from('flow_node_runs') as any).update({
-          output: outputs[0] || [],
-          status: nodeError ? 'error' : 'done',
-          error: nodeError || null,
-          completed_at: new Date().toISOString(),
-          duration_ms: nodeDuration,
-        }).eq('id', nodeRunId);
+        await persistExactlyOneTelemetryRow(() => (this.supabase
+          .from('flow_node_runs') as any)
+          .update(completeNodeTelemetry({
+            status: nodeErrorCode ? 'error' : 'done',
+            safeErrorCode: nodeErrorCode ?? null,
+            completedAt: new Date().toISOString(),
+            durationMs: nodeDuration,
+          }))
+          .eq('execution_id', executionId)
+          .eq('stage', node.id)
+          .select('execution_id, stage'));
 
-        if (nodeError) {
+        if (nodeErrorCode) {
           // On error, stop the execution
-          executionError = `Node "${node.name}" (${node.id}) failed: ${nodeError}`;
+          executionErrorCode = nodeErrorCode;
           break;
         }
 
@@ -202,30 +239,41 @@ export class WorkflowRunner {
       }
 
       if (Date.now() >= timeout && queue.length > 0) {
-        executionError = 'Execution timed out';
+        executionErrorCode = 'EXECUTION_TIMED_OUT';
       }
 
-    } catch (err) {
-      executionError = err instanceof Error ? err.message : String(err);
-      console.error(`[flowtender] Execution ${executionId} failed:`, executionError);
+    } catch (error) {
+      if (isTelemetryPersistenceError(error)) {
+        telemetryFailure = error;
+        executionErrorCode = 'TELEMETRY_PERSISTENCE_FAILED';
+      } else {
+        executionErrorCode ??= 'EXECUTION_FAILED';
+      }
+      console.error(`[flowtender] execution ${executionId} failed with ${executionErrorCode}`);
     }
 
     const duration = Date.now() - startTime;
 
     // Update execution record
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (this.supabase.from('flow_executions') as any).update({
-      status: executionError ? 'error' : 'done',
-      completed_at: new Date().toISOString(),
-      duration_ms: duration,
-      error: executionError || null,
-    }).eq('id', executionId);
+    await persistExactlyOneTelemetryRow(() => (this.supabase
+      .from('flow_executions') as any)
+      .update(completeExecutionTelemetry({
+        status: executionErrorCode ? 'error' : 'done',
+        safeErrorCode: executionErrorCode ?? null,
+        completedAt: new Date().toISOString(),
+        durationMs: duration,
+      }))
+      .eq('id', executionId)
+      .select('id'));
+
+    if (telemetryFailure) throw telemetryFailure;
 
     return {
       execution_id: executionId,
-      status: executionError ? 'error' : 'done',
+      status: executionErrorCode ? 'error' : 'done',
       response_payload: responsePayload,
-      error: executionError,
+      error_code: executionErrorCode,
       duration_ms: duration,
     };
   }

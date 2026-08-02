@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "for test_file in tests/*.test.ts; do ts-node --esm \"$test_file\" || exit 1; done",
     "test:integration": "bash scripts/test-integration.sh",
+    "test:migration-db": "bash scripts/test-migration-db.sh",
     "cli": "npx ts-node scripts/cli.ts"
   },
   "dependencies": {
@@ -14,7 +16,7 @@
     "@supabase/supabase-js": "^2.100.0",
     "lucide-react": "^1.0.1",
     "mermaid": "^11.13.0",
-    "next": "16.2.1",
+    "next": "16.2.12",
     "pdf-parse": "^2.4.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",

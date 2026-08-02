@@ -12,7 +12,7 @@ interface Execution {
   started_at: string | null;
   completed_at: string | null;
   duration_ms: number | null;
-  error: string | null;
+  safe_error_code: string | null;
 }
 
 const TENDER_SERVER = 'http://100.116.26.90:3844';

@@ -49,15 +49,20 @@ http://localhost:3845
 
 The inspector shows:
 - Active and completed workflow runs
-- Node-by-node execution details
-- Input/output data for each step
-- Timing and error information
+- Redacted stage-by-stage status and timing
+- Safe error codes and correlation IDs
+
+The inspector never exposes or stores trigger payloads, node input/output, prompts,
+document contents, company profiles, or LLM responses. In non-local environments it
+must be served over HTTPS. Browser access uses HTTP Basic auth with the fixed username
+`operator` and `FLOWTENDER_OPERATOR_KEY` as the password. Inspector APIs and the CLI
+use that same operator key as a Bearer token. Missing credentials fail closed.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20.9+
 - Supabase project (for persistence)
 
 ### Installation
@@ -74,7 +79,14 @@ Create a `.env.local` file:
 NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+FLOWTENDER_API_KEY=a-strong-service-to-service-secret
+FLOWTENDER_OPERATOR_KEY=a-different-strong-operator-secret
 ```
+
+`FLOWTENDER_API_KEY` is only for authenticated Tenderly webhook/trigger calls.
+`FLOWTENDER_OPERATOR_KEY` is only for the human inspector boundary. The credentials
+are intentionally not interchangeable and neither falls back to the Supabase service
+role key.
 
 ### Development
 
@@ -89,6 +101,50 @@ The app runs on port 3845 by default.
 ```bash
 npm run build
 ```
+
+### Security smoke test
+
+Against a running local or staging instance:
+
+```bash
+FLOWTENDER_OPERATOR_KEY=... FLOWTENDER_API_KEY=... npm run test:integration -- http://localhost:3845
+```
+
+The smoke is non-destructive: it tests negative auth, the public health response,
+credential separation, and authenticated webhook routing without running a workflow.
+
+### Redacted telemetry retention and purge
+
+Migration `002_secure_redacted_telemetry.sql` restricts both tracking tables to the
+service role, removes payload-bearing columns, and limits telemetry to execution ID,
+workflow/stage, tender ID, status, safe error code, timestamps, duration, and an opaque
+correlation ID. Rows become eligible for automatic deletion once older than seven days.
+A `pg_cron` job runs daily at 03:17 UTC, so with the scheduler operating normally,
+telemetry is retained for less than eight days: the seven-day cutoff plus less than
+24 hours until the next run. Missed or disabled scheduler runs can extend that window.
+Each run records only the purge date plus deleted execution/node-run counts in
+`flow_telemetry_purge_log`.
+
+Existing telemetry is not automatically bulk-purged when the migration is applied.
+After an operator has reviewed the target project, an explicit trusted SQL action is
+required:
+
+```sql
+SELECT *
+FROM public.purge_all_flow_telemetry('PURGE FLOWTENDER TELEMETRY');
+```
+
+The function does not return or export payloads. Do not invoke it casually or as part
+of application startup. Stage-2 and stage-3 failures can be safely retried from their
+tender ID; stage-1 failures require a fresh source upload because source payloads are
+not retained.
+
+Use [`docs/flowtender-telemetry-rollout.md`](./docs/flowtender-telemetry-rollout.md)
+for the coordinated maintenance procedure. A disposable local Supabase database can
+exercise migrations 001 → 002, a second retry of 002, RLS/uniqueness, and purge-count
+assertions with `npm run test:migration-db`; the script refuses non-local database URLs
+and requires `FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES` confirmation alongside
+`FLOWTENDER_TEST_DATABASE_URL`.
 
 ### Production
 
@@ -120,7 +176,8 @@ Workflows are defined as JSON files in the `workflows/` directory. See [`workflo
 Workflows can be triggered via HTTP:
 
 ```bash
-POST /api/workflows/:workflow_id/trigger
+POST /api/flow/trigger/:workflow_id
+Authorization: Bearer $FLOWTENDER_API_KEY
 Content-Type: application/json
 
 {
@@ -128,6 +185,14 @@ Content-Type: application/json
   "file_url": "https://..."
 }
 ```
+
+The only unauthenticated operational endpoint is:
+
+```text
+GET /api/flow/health
+```
+
+It returns only `{"status":"ok"}` and no execution or customer metadata.
 
 ## License
 
