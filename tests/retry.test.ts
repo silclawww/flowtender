@@ -2,24 +2,28 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { handleRetryExecution } from '../lib/retry-handler.ts';
 import { buildSafeRetry, SafeRetryError } from '../lib/retry.ts';
 
 const tenderId = '0b2f6f51-b91a-47db-b652-6a680a978efe';
+const orgId = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
+
+const failedStage2 = {
+  workflow_id: 'tender-stage2-requirements',
+  tender_id: tenderId,
+  status: 'error',
+  correlation_id: 'req-123',
+};
 
 test('a failed stage-2 execution can be reconstructed from safe metadata', () => {
-  const retry = buildSafeRetry({
-    workflow_id: 'tender-stage2-requirements',
-    tender_id: tenderId,
-    status: 'error',
-    correlation_id: 'req-123',
-  });
+  const retry = buildSafeRetry(failedStage2, orgId);
 
   assert.deepEqual(retry, {
     workflowId: 'tender-stage2-requirements',
-    triggerPayload: { tender_id: tenderId },
+    triggerPayload: { tender_id: tenderId, org_id: orgId },
     correlationId: 'req-123',
   });
-  assert.deepEqual(Object.keys(retry.triggerPayload), ['tender_id']);
+  assert.deepEqual(Object.keys(retry.triggerPayload), ['tender_id', 'org_id']);
 });
 
 test('successful executions cannot be retried', () => {
@@ -29,7 +33,7 @@ test('successful executions cannot be retried', () => {
       tender_id: tenderId,
       status: 'done',
       correlation_id: null,
-    }),
+    }, orgId),
     (error: unknown) => error instanceof SafeRetryError && error.code === 'EXECUTION_NOT_RETRYABLE',
   );
 });
@@ -53,9 +57,124 @@ test('retry fails closed without a tender identifier', () => {
       tender_id: null,
       status: 'error',
       correlation_id: null,
-    }),
+    }, orgId),
     (error: unknown) => error instanceof SafeRetryError && error.code === 'EXECUTION_NOT_RETRYABLE',
   );
+});
+
+test('retry fails closed without a valid immutable org context', () => {
+  assert.throws(
+    () => buildSafeRetry(failedStage2, 'customer-content-not-a-uuid'),
+    (error: unknown) => {
+      assert.equal(
+        error instanceof SafeRetryError && error.code === 'RETRY_TENANT_CONTEXT_INVALID',
+        true,
+      );
+      assert.doesNotMatch(String(error), /customer-content/);
+      return true;
+    },
+  );
+});
+
+test('retry route reconstructs exactly the two immutable tenant identifiers', async () => {
+  let calledPayload: Record<string, unknown> | undefined;
+  const response = await handleRetryExecution('execution-id', {
+    loadExecution: async () => ({ data: failedStage2, error: null }),
+    loadTenderOrg: async (id) => {
+      assert.equal(id, tenderId);
+      return { data: { org_id: orgId }, error: null };
+    },
+    runWorkflow: async (_workflowId, payload) => {
+      calledPayload = payload;
+      return {
+        execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
+        status: 'done',
+        duration_ms: 1,
+      };
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calledPayload, { tender_id: tenderId, org_id: orgId });
+  assert.deepEqual(Object.keys(calledPayload ?? {}), ['tender_id', 'org_id']);
+});
+
+test('a failed retried workflow is never reported as a successful HTTP response', async () => {
+  const response = await handleRetryExecution('execution-id', {
+    loadExecution: async () => ({ data: failedStage2, error: null }),
+    loadTenderOrg: async () => ({ data: { org_id: orgId }, error: null }),
+    runWorkflow: async () => ({
+      execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
+      status: 'error',
+      error_code: 'NODE_EXECUTION_FAILED',
+      duration_ms: 1,
+    }),
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), {
+    error_code: 'NODE_EXECUTION_FAILED',
+    execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
+  });
+});
+
+test('stage-1 retry rejection does not look up a tender', async () => {
+  let tenderLookups = 0;
+  const response = await handleRetryExecution('execution-id', {
+    loadExecution: async () => ({
+      data: { ...failedStage2, workflow_id: 'tender-stage1-pdf' },
+      error: null,
+    }),
+    loadTenderOrg: async () => {
+      tenderLookups += 1;
+      throw new Error('must not run');
+    },
+    runWorkflow: async () => {
+      throw new Error('must not run');
+    },
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(tenderLookups, 0);
+  assert.deepEqual(await response.json(), { error_code: 'SOURCE_REUPLOAD_REQUIRED' });
+});
+
+test('retry route fails closed for missing, invalid, and unavailable org context', async () => {
+  const cases = [
+    {
+      result: { data: null, error: { code: 'PGRST116', message: 'not found' } },
+      status: 404,
+      code: 'RETRY_TENDER_NOT_FOUND',
+    },
+    {
+      result: { data: { org_id: null }, error: null },
+      status: 409,
+      code: 'RETRY_TENANT_CONTEXT_INVALID',
+    },
+    {
+      result: { data: null, error: { code: '57P01', message: 'secret database host' } },
+      status: 503,
+      code: 'RETRY_CONTEXT_UNAVAILABLE',
+    },
+  ];
+
+  for (const testCase of cases) {
+    let workflowRuns = 0;
+    const response = await handleRetryExecution('execution-id', {
+      loadExecution: async () => ({ data: failedStage2, error: null }),
+      loadTenderOrg: async () => testCase.result,
+      runWorkflow: async () => {
+        workflowRuns += 1;
+        throw new Error('must not run');
+      },
+    });
+
+    assert.equal(response.status, testCase.status);
+    assert.equal(workflowRuns, 0);
+    const body = await response.json();
+    assert.deepEqual(body, { error_code: testCase.code });
+    assert.doesNotMatch(JSON.stringify(body), /secret database host/);
+  }
 });
 
 test('retry allows the same five-minute serverless window as initial processing', () => {

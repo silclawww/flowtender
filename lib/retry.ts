@@ -1,5 +1,6 @@
 export type SafeRetryErrorCode =
   | 'EXECUTION_NOT_RETRYABLE'
+  | 'RETRY_TENANT_CONTEXT_INVALID'
   | 'SOURCE_REUPLOAD_REQUIRED';
 
 export class SafeRetryError extends Error {
@@ -15,7 +16,7 @@ export class SafeRetryError extends Error {
   }
 }
 
-interface RetryableExecution {
+export interface RetryableExecution {
   workflow_id: string;
   tender_id: string | null;
   status: string;
@@ -34,8 +35,7 @@ const SOURCE_WORKFLOWS = new Set([
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** Build the only retry payload that can be reconstructed from redacted data. */
-export function buildSafeRetry(execution: RetryableExecution) {
+export function prepareSafeRetry(execution: RetryableExecution) {
   if (execution.status !== 'error') {
     throw new SafeRetryError('EXECUTION_NOT_RETRYABLE', 'Only failed executions can be retried');
   }
@@ -55,7 +55,24 @@ export function buildSafeRetry(execution: RetryableExecution) {
 
   return {
     workflowId: execution.workflow_id,
-    triggerPayload: { tender_id: execution.tender_id },
+    tenderId: execution.tender_id,
     correlationId: execution.correlation_id ?? undefined,
+  };
+}
+
+/** Build the only retry payload reconstructable from redacted and immutable data. */
+export function buildSafeRetry(execution: RetryableExecution, orgId?: string | null) {
+  const prepared = prepareSafeRetry(execution);
+  if (!orgId || !UUID_PATTERN.test(orgId)) {
+    throw new SafeRetryError(
+      'RETRY_TENANT_CONTEXT_INVALID',
+      'Retry tenant context is invalid',
+    );
+  }
+
+  return {
+    workflowId: prepared.workflowId,
+    triggerPayload: { tender_id: prepared.tenderId, org_id: orgId },
+    correlationId: prepared.correlationId,
   };
 }

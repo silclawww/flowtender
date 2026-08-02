@@ -1,5 +1,5 @@
-import { createServiceClient } from '@/lib/supabase/service';
-import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+import { createServiceClient } from '../supabase/service.ts';
+import type { NodeExecutor, ExecutionItem, ExecutionContext } from '../../types/execution.ts';
 
 // Evaluate {{ expression }} templates against context
 function evalTemplate(template: string, input: ExecutionItem[], context: ExecutionContext): unknown {
@@ -125,37 +125,49 @@ export const supabaseUpsertExecutor: NodeExecutor = {
 
 // supabase.update — UPDATE rows matching filters
 // Config: { table: string, filters: FilterCondition[], data: 'auto_map' | Record<string,unknown> }
-export const supabaseUpdateExecutor: NodeExecutor = {
-  async execute(config, input, context) {
-    const supabase = createServiceClient();
-    const table = evalTemplate(config.table as string, input, context) as string;
-    const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
-      ...f,
-      value: evalTemplate(String(f.value), input, context),
-    }));
-    
-    let data: Record<string, unknown>;
-    if (config.data === 'auto_map' || !config.data) {
-      data = input[0]?.json || {};
-    } else if (typeof config.data === 'object') {
-      data = {};
-      for (const [k, v] of Object.entries(config.data as Record<string, unknown>)) {
-        data[k] = typeof v === 'string' ? evalTemplate(v, input, context) : v;
+export function createSupabaseUpdateExecutor(
+  createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
+): NodeExecutor {
+  return {
+    async execute(config, input, context) {
+      const table = evalTemplate(config.table as string, input, context) as string;
+      const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
+        ...f,
+        value: evalTemplate(String(f.value), input, context),
+      }));
+
+      let data: Record<string, unknown>;
+      if (config.data === 'auto_map' || !config.data) {
+        data = input[0]?.json || {};
+      } else if (typeof config.data === 'object') {
+        data = {};
+        for (const [k, v] of Object.entries(config.data as Record<string, unknown>)) {
+          data[k] = typeof v === 'string' ? evalTemplate(v, input, context) : v;
+        }
+      } else {
+        data = input[0]?.json || {};
       }
-    } else {
-      data = input[0]?.json || {};
-    }
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query = (supabase.from(table) as any).update(data).select();
-    query = applyFilters(query, filters);
-    
-    const { data: result, error } = await query;
-    if (error) throw new Error(`supabase.update error: ${error.message}`);
-    const rows = (result || []) as Record<string, unknown>[];
-    return [rows.length > 0 ? rows.map(r => ({ json: r })) : [{ json: data }]];
-  }
-};
+
+      let mutation: { data: unknown; error: unknown };
+      try {
+        const supabase = createClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let query = (supabase.from(table) as any).update(data).select();
+        query = applyFilters(query, filters);
+        mutation = await query;
+      } catch {
+        throw new Error('SUPABASE_UPDATE_FAILED');
+      }
+
+      if (mutation.error || !Array.isArray(mutation.data) || mutation.data.length === 0) {
+        throw new Error('SUPABASE_UPDATE_FAILED');
+      }
+      return [mutation.data.map(row => ({ json: row as Record<string, unknown> }))];
+    },
+  };
+}
+
+export const supabaseUpdateExecutor = createSupabaseUpdateExecutor();
 
 export const supabaseExecutors: Record<string, NodeExecutor> = {
   'supabase.query': supabaseQueryExecutor,
