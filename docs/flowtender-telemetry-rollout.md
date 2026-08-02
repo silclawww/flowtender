@@ -19,9 +19,13 @@ the new runner requires the replacement `stage`, `correlation_id`, and
    `SELECT count(*) FROM (SELECT execution_id, node_id FROM public.flow_node_runs GROUP BY execution_id, node_id HAVING count(*) > 1) AS duplicates;`.
    Abort for reviewed remediation if it is nonzero. Do not select payload-bearing
    legacy columns.
-5. Back up according to the Supabase recovery procedure, then apply migration
-   `002_secure_redacted_telemetry.sql` once from the trusted migration runner.
-   Confirm the migration record, forced RLS, named constraints, and TTL cron.
+5. Use only the approved platform recovery mechanism; it must not create or
+   download a separate logical dump or raw telemetry export. Because a managed
+   recovery point can retain sensitive pre-purge telemetry, record its recovery
+   identifier, retention period, and automatic expiry/deletion date in the
+   change evidence. Then apply migration `002_secure_redacted_telemetry.sql`
+   once from the trusted migration runner. Confirm the migration record, forced
+   RLS, named constraints, and TTL cron.
 6. Explicitly purge legacy history from a trusted SQL session:
    `SELECT * FROM public.purge_all_flow_telemetry('PURGE FLOWTENDER TELEMETRY');`
    Save the returned execution/node counts and the matching purge-log row as

@@ -5,6 +5,8 @@ import test from 'node:test';
 const migrationPath = new URL('../supabase/migrations/002_secure_redacted_telemetry.sql', import.meta.url);
 const readmePath = new URL('../README.md', import.meta.url);
 const dbTestPath = new URL('../scripts/test-migration-db.sh', import.meta.url);
+const dbAssertionsPath = new URL('./sql/migration-db-assertions.sql', import.meta.url);
+const rolloutPath = new URL('../docs/flowtender-telemetry-rollout.md', import.meta.url);
 
 function migration(): string {
   return readFileSync(migrationPath, 'utf8');
@@ -86,4 +88,46 @@ test('a guarded disposable-database gate applies 001 then retry-safe 002', () =>
   assert.match(script, /001_flowtender_schema\.sql/);
   assert.equal((script.match(/002_secure_redacted_telemetry\.sql/g) ?? []).length, 2);
   assert.match(script, /migration-db-assertions\.sql/);
+});
+
+test('disposable database assertions verify the complete telemetry privilege boundary', () => {
+  const sql = readFileSync(dbAssertionsPath, 'utf8');
+
+  for (const role of ['anon', 'authenticated']) {
+    for (const table of ['flow_executions', 'flow_node_runs', 'flow_telemetry_purge_log']) {
+      assert.match(
+        sql,
+        new RegExp(
+          `'${role}',\\s*'public\\.${table}',\\s*'SELECT, INSERT, UPDATE, DELETE'`,
+        ),
+      );
+    }
+    for (const signature of [
+      'purge_expired_flow_telemetry\\(\\)',
+      'purge_all_flow_telemetry\\(text\\)',
+    ]) {
+      assert.match(
+        sql,
+        new RegExp(`'${role}',\\s*'public\\.${signature}',\\s*'EXECUTE'`),
+      );
+    }
+  }
+  assert.match(sql, /has_function_privilege/);
+  assert.match(sql, /aclexplode/);
+  assert.match(sql, /prosecdef/);
+  assert.match(sql, /search_path=public, pg_temp/);
+  assert.match(sql, /row_security=off/);
+  assert.match(sql, /FROM cron\.job/);
+  assert.match(sql, /schedule = '17 3 \* \* \*'/);
+  assert.match(sql, /command = 'SELECT public\.purge_expired_flow_telemetry\(\);'/);
+});
+
+test('rollout recovery evidence forbids raw exports and records backup expiry', () => {
+  const rollout = readFileSync(rolloutPath, 'utf8');
+
+  assert.match(rollout, /approved platform recovery mechanism/i);
+  assert.match(rollout, /must not create[^.]*logical dump/i);
+  assert.match(rollout, /raw telemetry export/i);
+  assert.match(rollout, /retention/i);
+  assert.match(rollout, /expiry/i);
 });
