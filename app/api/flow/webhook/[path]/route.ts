@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRunner } from '@/lib/runner';
 
+// Pipeline stages run synchronous LLM calls; allow long serverless execution on Vercel
+export const maxDuration = 300;
+
 // Map webhook path to workflow ID
 function resolveWorkflowId(path: string, payload: Record<string, unknown>): string {
   switch (path) {
@@ -25,10 +28,15 @@ export async function POST(
 ) {
   const { path } = await params;
   
-  // No auth required for internal calls from Tenderly (same server)
-  // But accept optional Bearer token anyway for safety
-  // We skip strict auth here because Tenderly's upload route doesn't send a token
-  // to these webhook-equivalent URLs
+  // Both apps are publicly reachable on Vercel — require the shared secret
+  // (FLOWTENDER_API_KEY, falling back to the service-role key) when configured.
+  const authHeader = request.headers.get('authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const apiKey = process.env.FLOWTENDER_API_KEY || serviceKey;
+  if (apiKey && token !== apiKey && token !== serviceKey) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
   
   let payload: Record<string, unknown> = {};
   try {
