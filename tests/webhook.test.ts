@@ -6,6 +6,8 @@ import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
 
 const SERVICE_KEY = 'service-secret-with-enough-entropy';
 const OPERATOR_KEY = 'operator-secret-with-enough-entropy';
+const TENDER_ID = '0b2f6f51-b91a-47db-b652-6a680a978efe';
+const ORG_ID = '3edb0931-87a3-45a6-a8f1-c1e87d539596';
 
 function webhookRequest(token?: string): Request {
   return new Request('https://flowtender.example/api/flow/webhook/tender-details', {
@@ -14,7 +16,7 @@ function webhookRequest(token?: string): Request {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ tender_id: '0b2f6f51-b91a-47db-b652-6a680a978efe' }),
+    body: JSON.stringify({ tender_id: TENDER_ID, org_id: ORG_ID }),
   });
 }
 
@@ -74,7 +76,7 @@ test('the dedicated service credential reaches the expected processing workflow'
 
   assert.equal(response.status, 200);
   assert.equal(calledWorkflow, 'tender-stage2-requirements');
-  assert.equal(calledPayload?.tender_id, '0b2f6f51-b91a-47db-b652-6a680a978efe');
+  assert.deepEqual(calledPayload, { tender_id: TENDER_ID, org_id: ORG_ID });
   assert.deepEqual(await response.json(), { processing_status: 'details_ready' });
 });
 
