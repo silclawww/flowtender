@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { handleWebhookRequest } from '../lib/webhook-handler.ts';
+import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
 
 const SERVICE_KEY = 'service-secret-with-enough-entropy';
 const OPERATOR_KEY = 'operator-secret-with-enough-entropy';
@@ -75,4 +76,22 @@ test('the dedicated service credential reaches the expected processing workflow'
   assert.equal(calledWorkflow, 'tender-stage2-requirements');
   assert.equal(calledPayload?.tender_id, '0b2f6f51-b91a-47db-b652-6a680a978efe');
   assert.deepEqual(await response.json(), { processing_status: 'details_ready' });
+});
+
+test('telemetry persistence failures return a redacted no-store service response', async () => {
+  const response = await handleWebhookRequest(
+    webhookRequest(SERVICE_KEY),
+    'tender-details',
+    async () => {
+      throw new TelemetryPersistenceError();
+    },
+    SERVICE_KEY,
+    OPERATOR_KEY,
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    error_code: 'TELEMETRY_PERSISTENCE_FAILED',
+  });
 });

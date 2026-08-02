@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { buildSafeRetry, SafeRetryError } from '../lib/retry.ts';
@@ -57,3 +58,10 @@ test('retry fails closed without a tender identifier', () => {
   );
 });
 
+test('retry allows the same five-minute serverless window as initial processing', () => {
+  const route = readFileSync(
+    new URL('../app/api/flow/retry/[executionId]/route.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(route, /export const maxDuration = 300;/);
+});

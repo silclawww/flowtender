@@ -8,6 +8,7 @@
     "start": "next start",
     "test": "for test_file in tests/*.test.ts; do ts-node --esm \"$test_file\" || exit 1; done",
     "test:integration": "bash scripts/test-integration.sh",
+    "test:migration-db": "bash scripts/test-migration-db.sh",
     "cli": "npx ts-node scripts/cli.ts"
   },
   "dependencies": {

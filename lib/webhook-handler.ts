@@ -1,4 +1,5 @@
 import { isServiceAuthorized } from './auth.ts';
+import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
 
 interface WebhookRunResult {
   execution_id: string;
@@ -85,7 +86,13 @@ export async function handleWebhookRequest(
       status: result.status,
     };
     return Response.json(responseData, { headers: { 'Cache-Control': 'no-store' } });
-  } catch {
+  } catch (error) {
+    if (isTelemetryPersistenceError(error)) {
+      return Response.json(
+        { error_code: error.code },
+        { status: 503, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
     return Response.json(
       { error_code: 'EXECUTION_FAILED' },
       { status: 500, headers: { 'Cache-Control': 'no-store' } },

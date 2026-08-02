@@ -5,7 +5,8 @@ export type SafeErrorCode =
   | 'EXECUTION_TIMED_OUT'
   | 'NODE_EXECUTION_FAILED'
   | 'UNKNOWN_NODE_TYPE'
-  | 'WORKFLOW_LOAD_FAILED';
+  | 'WORKFLOW_LOAD_FAILED'
+  | 'TELEMETRY_PERSISTENCE_FAILED';
 
 type CompletionStatus = 'done' | 'error';
 
@@ -18,6 +19,7 @@ const SAFE_ERROR_CODES = new Set<SafeErrorCode>([
   'NODE_EXECUTION_FAILED',
   'UNKNOWN_NODE_TYPE',
   'WORKFLOW_LOAD_FAILED',
+  'TELEMETRY_PERSISTENCE_FAILED',
 ]);
 
 function requireWorkflowStage(value: string, field: 'workflow' | 'stage'): string {

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const migrationPath = new URL('../supabase/migrations/002_secure_redacted_telemetry.sql', import.meta.url);
 const readmePath = new URL('../README.md', import.meta.url);
+const dbTestPath = new URL('../scripts/test-migration-db.sh', import.meta.url);
 
 function migration(): string {
   return readFileSync(migrationPath, 'utf8');
@@ -32,6 +33,16 @@ test('forward migration physically removes sensitive payload columns', () => {
   assert.match(sql, /flow_executions_workflow_id_check/);
 });
 
+test('schema hardening is safe to retry and enforces one node row per execution stage', () => {
+  const sql = migration();
+  assert.match(sql, /FROM pg_attribute/);
+  assert.match(sql, /attname = 'node_id'/);
+  assert.match(sql, /EXECUTE[\s\S]*UPDATE public\.flow_node_runs/);
+  assert.match(sql, /FROM pg_constraint/);
+  assert.match(sql, /flow_node_runs_execution_stage_key/);
+  assert.match(sql, /UNIQUE \(execution_id, stage\)/);
+});
+
 test('migration defines automatic seven-day TTL and an explicit confirmed purge', () => {
   const sql = migration();
   assert.match(sql, /interval '7 days'/i);
@@ -44,6 +55,19 @@ test('migration defines automatic seven-day TTL and an explicit confirmed purge'
   assert.match(sql, /flow_node_runs_deleted/);
 });
 
+test('purges serialize writers and derive evidence from deleted rows', () => {
+  const sql = migration();
+  const advisoryLocks = sql.match(/pg_advisory_xact_lock/g) ?? [];
+  const tableLocks = sql.match(/LOCK TABLE public\.flow_executions, public\.flow_node_runs\s+IN ACCESS EXCLUSIVE MODE;/g) ?? [];
+  const returningDeletes = sql.match(/DELETE FROM public\.flow_(?:executions|node_runs)[\s\S]*?RETURNING/g) ?? [];
+
+  assert.equal(advisoryLocks.length, 2);
+  assert.equal(tableLocks.length, 2);
+  assert.ok(returningDeletes.length >= 4);
+  assert.equal((sql.match(/SET row_security = off/g) ?? []).length, 2);
+  assert.doesNotMatch(sql, /GET DIAGNOSTICS/);
+});
+
 test('daily TTL enforcement documents the seven-day cutoff and under-eight-day maximum', () => {
   const sql = migration();
   const readme = readFileSync(readmePath, 'utf8');
@@ -53,4 +77,13 @@ test('daily TTL enforcement documents the seven-day cutoff and under-eight-day m
   assert.match(readme, /daily at 03:17 UTC/i);
   assert.match(readme, /less than eight days/i);
   assert.doesNotMatch(`${sql}\n${readme}`, /at most (?:7|seven) days/i);
+});
+
+test('a guarded disposable-database gate applies 001 then retry-safe 002', () => {
+  const script = readFileSync(dbTestPath, 'utf8');
+  assert.match(script, /FLOWTENDER_TEST_DATABASE_DISPOSABLE/);
+  assert.match(script, /refusing non-local database URL/);
+  assert.match(script, /001_flowtender_schema\.sql/);
+  assert.equal((script.match(/002_secure_redacted_telemetry\.sql/g) ?? []).length, 2);
+  assert.match(script, /migration-db-assertions\.sql/);
 });

@@ -1,17 +1,19 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 const OPERATOR_USERNAME = 'operator';
 
 type HeaderReader = Pick<Headers, 'get'>;
 
-function secretsMatch(candidate: string, configuredSecret: string | undefined): boolean {
-  if (!configuredSecret || !candidate) return false;
+export function secretsMatch(
+  candidate: string,
+  configuredSecret: string | undefined,
+  comparator: typeof timingSafeEqual = timingSafeEqual,
+): boolean {
+  if (!configuredSecret) return false;
 
-  const candidateBytes = Buffer.from(candidate, 'utf8');
-  const configuredBytes = Buffer.from(configuredSecret, 'utf8');
-  if (candidateBytes.length !== configuredBytes.length) return false;
-
-  return timingSafeEqual(candidateBytes, configuredBytes);
+  const candidateDigest = createHash('sha256').update(candidate, 'utf8').digest();
+  const configuredDigest = createHash('sha256').update(configuredSecret, 'utf8').digest();
+  return comparator(candidateDigest, configuredDigest);
 }
 
 function bearerToken(headers: HeaderReader): string | null {

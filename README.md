@@ -139,6 +139,13 @@ of application startup. Stage-2 and stage-3 failures can be safely retried from 
 tender ID; stage-1 failures require a fresh source upload because source payloads are
 not retained.
 
+Use [`docs/flowtender-telemetry-rollout.md`](./docs/flowtender-telemetry-rollout.md)
+for the coordinated maintenance procedure. A disposable local Supabase database can
+exercise migrations 001 → 002, a second retry of 002, RLS/uniqueness, and purge-count
+assertions with `npm run test:migration-db`; the script refuses non-local database URLs
+and requires `FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES` confirmation alongside
+`FLOWTENDER_TEST_DATABASE_URL`.
+
 ### Production
 
 ```bash

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   isOperatorAuthorized,
   isServiceAuthorized,
+  secretsMatch,
 } from '../lib/auth.ts';
 
 const OPERATOR_KEY = 'operator-secret-with-enough-entropy';
@@ -49,4 +50,15 @@ test('operator and service credentials are not interchangeable', () => {
 test('a deployment configured with identical boundary keys fails closed', () => {
   assert.equal(isOperatorAuthorized(bearer(OPERATOR_KEY), OPERATOR_KEY, OPERATOR_KEY), false);
   assert.equal(isServiceAuthorized(bearer(SERVICE_KEY), SERVICE_KEY, SERVICE_KEY), false);
+});
+
+test('secret comparison always passes fixed-size digests to timingSafeEqual', () => {
+  const comparedLengths: Array<[number, number]> = [];
+  const comparator = (candidate: NodeJS.ArrayBufferView, configured: NodeJS.ArrayBufferView) => {
+    comparedLengths.push([candidate.byteLength, configured.byteLength]);
+    return false;
+  };
+
+  assert.equal(secretsMatch('short', 'a much longer configured secret', comparator), false);
+  assert.deepEqual(comparedLengths, [[32, 32]]);
 });

@@ -11,10 +11,25 @@ ALTER TABLE public.flow_node_runs
   ADD COLUMN IF NOT EXISTS safe_error_code TEXT,
   ADD COLUMN IF NOT EXISTS correlation_id TEXT;
 
--- Preserve only the non-sensitive stage identifier while upgrading existing rows.
-UPDATE public.flow_node_runs
-SET stage = COALESCE(NULLIF(node_id, ''), 'unknown')
-WHERE stage IS NULL;
+-- Preserve only the non-sensitive stage identifier while upgrading legacy 001
+-- rows. Dynamic SQL keeps a partial retry safe after node_id has been dropped.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_attribute
+    WHERE attrelid = 'public.flow_node_runs'::regclass
+      AND attname = 'node_id'
+      AND NOT attisdropped
+  ) THEN
+    EXECUTE $backfill$
+      UPDATE public.flow_node_runs
+      SET stage = COALESCE(NULLIF(node_id, ''), 'unknown')
+      WHERE stage IS NULL
+    $backfill$;
+  END IF;
+END;
+$$;
 
 ALTER TABLE public.flow_node_runs
   ALTER COLUMN stage SET NOT NULL;
@@ -32,25 +47,100 @@ ALTER TABLE public.flow_node_runs
   DROP COLUMN IF EXISTS node_name,
   DROP COLUMN IF EXISTS node_id;
 
-ALTER TABLE public.flow_executions
-  ADD CONSTRAINT flow_executions_workflow_id_check
-    CHECK (workflow_id ~ '^[A-Za-z0-9_-]{1,128}$'),
-  ADD CONSTRAINT flow_executions_safe_error_code_check
-    CHECK (safe_error_code IS NULL OR safe_error_code ~ '^[A-Z0-9_]{1,64}$'),
-  ADD CONSTRAINT flow_executions_correlation_id_check
-    CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
-  ADD CONSTRAINT flow_executions_duration_ms_check
-    CHECK (duration_ms IS NULL OR duration_ms >= 0);
+-- Guard named constraints so an interrupted migration can be retried safely.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_workflow_id_check'
+  ) THEN
+    ALTER TABLE public.flow_executions
+      ADD CONSTRAINT flow_executions_workflow_id_check
+      CHECK (workflow_id ~ '^[A-Za-z0-9_-]{1,128}$');
+  END IF;
 
-ALTER TABLE public.flow_node_runs
-  ADD CONSTRAINT flow_node_runs_stage_check
-    CHECK (stage ~ '^[A-Za-z0-9_-]{1,128}$'),
-  ADD CONSTRAINT flow_node_runs_safe_error_code_check
-    CHECK (safe_error_code IS NULL OR safe_error_code ~ '^[A-Z0-9_]{1,64}$'),
-  ADD CONSTRAINT flow_node_runs_correlation_id_check
-    CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
-  ADD CONSTRAINT flow_node_runs_duration_ms_check
-    CHECK (duration_ms IS NULL OR duration_ms >= 0);
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_safe_error_code_check'
+  ) THEN
+    ALTER TABLE public.flow_executions
+      ADD CONSTRAINT flow_executions_safe_error_code_check
+      CHECK (safe_error_code IS NULL OR safe_error_code ~ '^[A-Z0-9_]{1,64}$');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_correlation_id_check'
+  ) THEN
+    ALTER TABLE public.flow_executions
+      ADD CONSTRAINT flow_executions_correlation_id_check
+      CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9._:-]{1,128}$');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_duration_ms_check'
+  ) THEN
+    ALTER TABLE public.flow_executions
+      ADD CONSTRAINT flow_executions_duration_ms_check
+      CHECK (duration_ms IS NULL OR duration_ms >= 0);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_stage_check'
+  ) THEN
+    ALTER TABLE public.flow_node_runs
+      ADD CONSTRAINT flow_node_runs_stage_check
+      CHECK (stage ~ '^[A-Za-z0-9_-]{1,128}$');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_safe_error_code_check'
+  ) THEN
+    ALTER TABLE public.flow_node_runs
+      ADD CONSTRAINT flow_node_runs_safe_error_code_check
+      CHECK (safe_error_code IS NULL OR safe_error_code ~ '^[A-Z0-9_]{1,64}$');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_correlation_id_check'
+  ) THEN
+    ALTER TABLE public.flow_node_runs
+      ADD CONSTRAINT flow_node_runs_correlation_id_check
+      CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9._:-]{1,128}$');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_duration_ms_check'
+  ) THEN
+    ALTER TABLE public.flow_node_runs
+      ADD CONSTRAINT flow_node_runs_duration_ms_check
+      CHECK (duration_ms IS NULL OR duration_ms >= 0);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_execution_stage_key'
+  ) THEN
+    ALTER TABLE public.flow_node_runs
+      ADD CONSTRAINT flow_node_runs_execution_stage_key
+      UNIQUE (execution_id, stage);
+  END IF;
+END;
+$$;
 
 -- The old policies were named for service role but applied USING (true) to every role.
 DROP POLICY IF EXISTS "flow_executions: service role full access" ON public.flow_executions;
@@ -93,22 +183,38 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
+SET row_security = off
 AS $$
 DECLARE
   v_purged_at TIMESTAMPTZ := clock_timestamp();
   v_execution_count BIGINT;
   v_node_count BIGINT;
 BEGIN
-  SELECT count(*)
-    INTO v_node_count
-  FROM public.flow_node_runs AS node_run
-  JOIN public.flow_executions AS execution
-    ON execution.id = node_run.execution_id
-  WHERE execution.started_at < now() - interval '7 days';
+  -- Serialize purge functions with each other, then stop telemetry writers for
+  -- the transaction so the returned evidence describes the exact deletion.
+  PERFORM pg_advisory_xact_lock(hashtextextended('flowtender.telemetry.purge', 0));
+  LOCK TABLE public.flow_executions, public.flow_node_runs
+    IN ACCESS EXCLUSIVE MODE;
 
-  DELETE FROM public.flow_executions
-  WHERE started_at < now() - interval '7 days';
-  GET DIAGNOSTICS v_execution_count = ROW_COUNT;
+  WITH deleted_node_runs AS (
+    DELETE FROM public.flow_node_runs AS node_run
+    USING public.flow_executions AS execution
+    WHERE execution.id = node_run.execution_id
+      AND execution.started_at < now() - interval '7 days'
+    RETURNING node_run.execution_id
+  )
+  SELECT count(*)::BIGINT
+    INTO v_node_count
+  FROM deleted_node_runs;
+
+  WITH deleted_executions AS (
+    DELETE FROM public.flow_executions
+    WHERE started_at < now() - interval '7 days'
+    RETURNING id
+  )
+  SELECT count(*)::BIGINT
+    INTO v_execution_count
+  FROM deleted_executions;
 
   INSERT INTO public.flow_telemetry_purge_log (
     purged_at,
@@ -135,6 +241,7 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
+SET row_security = off
 AS $$
 DECLARE
   v_purged_at TIMESTAMPTZ := clock_timestamp();
@@ -145,11 +252,25 @@ BEGIN
     RAISE EXCEPTION 'Explicit purge confirmation phrase required';
   END IF;
 
-  DELETE FROM public.flow_node_runs;
-  GET DIAGNOSTICS v_node_count = ROW_COUNT;
+  PERFORM pg_advisory_xact_lock(hashtextextended('flowtender.telemetry.purge', 0));
+  LOCK TABLE public.flow_executions, public.flow_node_runs
+    IN ACCESS EXCLUSIVE MODE;
 
-  DELETE FROM public.flow_executions;
-  GET DIAGNOSTICS v_execution_count = ROW_COUNT;
+  WITH deleted_node_runs AS (
+    DELETE FROM public.flow_node_runs
+    RETURNING execution_id
+  )
+  SELECT count(*)::BIGINT
+    INTO v_node_count
+  FROM deleted_node_runs;
+
+  WITH deleted_executions AS (
+    DELETE FROM public.flow_executions
+    RETURNING id
+  )
+  SELECT count(*)::BIGINT
+    INTO v_execution_count
+  FROM deleted_executions;
 
   INSERT INTO public.flow_telemetry_purge_log (
     purged_at,
