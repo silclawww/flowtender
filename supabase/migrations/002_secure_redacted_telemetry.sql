@@ -80,7 +80,10 @@ ALTER TABLE public.flow_telemetry_purge_log FORCE ROW LEVEL SECURITY;
 REVOKE ALL PRIVILEGES ON TABLE public.flow_telemetry_purge_log FROM PUBLIC, anon, authenticated;
 GRANT ALL PRIVILEGES ON TABLE public.flow_telemetry_purge_log TO service_role;
 
--- Automatic TTL: redacted execution and node telemetry lives for at most 7 days.
+-- Retention cutoff: redacted telemetry becomes eligible for deletion once it is
+-- older than 7 days. The job runs daily at 03:17 UTC, so normal maximum
+-- retention is under 8 days (the 7-day cutoff plus less than 24 hours).
+-- Missed or disabled scheduler runs can extend that window.
 CREATE OR REPLACE FUNCTION public.purge_expired_flow_telemetry()
 RETURNS TABLE (
   purged_at TIMESTAMPTZ,

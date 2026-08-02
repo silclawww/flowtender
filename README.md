@@ -118,8 +118,11 @@ credential separation, and authenticated webhook routing without running a workf
 Migration `002_secure_redacted_telemetry.sql` restricts both tracking tables to the
 service role, removes payload-bearing columns, and limits telemetry to execution ID,
 workflow/stage, tender ID, status, safe error code, timestamps, duration, and an opaque
-correlation ID. Redacted telemetry has a seven-day TTL. A `pg_cron` job runs daily at
-03:17 UTC and records only the purge date plus deleted execution/node-run counts in
+correlation ID. Rows become eligible for automatic deletion once older than seven days.
+A `pg_cron` job runs daily at 03:17 UTC, so with the scheduler operating normally,
+telemetry is retained for less than eight days: the seven-day cutoff plus less than
+24 hours until the next run. Missed or disabled scheduler runs can extend that window.
+Each run records only the purge date plus deleted execution/node-run counts in
 `flow_telemetry_purge_log`.
 
 Existing telemetry is not automatically bulk-purged when the migration is applied.

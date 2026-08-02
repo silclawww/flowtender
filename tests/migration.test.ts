@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const migrationPath = new URL('../supabase/migrations/002_secure_redacted_telemetry.sql', import.meta.url);
+const readmePath = new URL('../README.md', import.meta.url);
 
 function migration(): string {
   return readFileSync(migrationPath, 'utf8');
@@ -41,4 +42,15 @@ test('migration defines automatic seven-day TTL and an explicit confirmed purge'
   assert.match(sql, /purged_at/);
   assert.match(sql, /flow_executions_deleted/);
   assert.match(sql, /flow_node_runs_deleted/);
+});
+
+test('daily TTL enforcement documents the seven-day cutoff and under-eight-day maximum', () => {
+  const sql = migration();
+  const readme = readFileSync(readmePath, 'utf8');
+
+  assert.match(sql, /'17 3 \* \* \*'/);
+  assert.match(readme, /older than seven days/i);
+  assert.match(readme, /daily at 03:17 UTC/i);
+  assert.match(readme, /less than eight days/i);
+  assert.doesNotMatch(`${sql}\n${readme}`, /at most (?:7|seven) days/i);
 });
