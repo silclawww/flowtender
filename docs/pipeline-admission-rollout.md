@@ -70,6 +70,15 @@ Rollback is application-only: return both applications to the previous compatibl
 versions while ingress remains closed. Leave migration `003` in place; it is
 forward-only and does not alter Flowtender telemetry tables.
 
+### Retry compatibility boundary
+
+Executions created before the P0.3 admission rollout do not have a claimed,
+immutable admission-root row carrying the actor and organisation context now
+required for a safe retry. They are intentionally not retry-compatible and must
+not be backfilled from mutable or guessed data. Resume Stage 2/3 from Tenderly
+under a new admission, or re-upload the source for Stage 1. Only executions
+created and claimed by the P0.3 runner may use the operator retry endpoint.
+
 ## Required smoke checks
 
 - Missing, empty, malformed, wrong, operator, and Supabase service-role bearer

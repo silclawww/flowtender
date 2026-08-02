@@ -19,7 +19,10 @@ import {
   normalizeCorrelationId,
   type SafeErrorCode,
 } from '../telemetry.ts';
-import { preflightWorkflowPayload } from '../tenant-context.ts';
+import {
+  materializeWorkflowPayload,
+  preflightWorkflowPayload,
+} from '../tenant-context.ts';
 import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
@@ -105,7 +108,6 @@ export class WorkflowRunner {
     options: RunOptions = {}
   ): Promise<ExecutionResult> {
     const preflight = preflightWorkflowPayload(workflowId, triggerPayload);
-    const workflowPayload = preflight.payload;
 
     const executionId = uuidv4();
     const startTime = Date.now();
@@ -114,10 +116,6 @@ export class WorkflowRunner {
       ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
       : normalizeCorrelationId(options.correlationId, executionId);
 
-    // Detect tender_id in payload
-    const tender_id = preflight.trustedContext?.tender_id
-      ?? (workflowPayload.tender_id as string | undefined)
-      ?? ((workflowPayload.body as Record<string,unknown>)?.tender_id as string | undefined);
     let receiverOwnedLease: string | null = null;
     if (preflight.trustedContext) {
       await claimPipelineAdmission(this.supabase, {
@@ -135,12 +133,21 @@ export class WorkflowRunner {
     }
 
     try {
+      // Business payload traversal is deliberately deferred until the durable
+      // admission has been claimed. This prevents rejected/replayed requests
+      // from consuming clone, telemetry, parser, or LLM work.
+      const materialized = materializeWorkflowPayload(workflowId, preflight);
+      const resolvedWorkflowId = materialized.workflowId;
+      const workflowPayload = materialized.payload;
+      const tender_id = preflight.trustedContext?.tender_id
+        ?? (workflowPayload.tender_id as string | undefined);
+
       // Create execution record
       await persistExactlyOneTelemetryRow(() => this.supabase
       .from('flow_executions')
       .insert(createExecutionTelemetry({
         executionId,
-        workflowId,
+        workflowId: resolvedWorkflowId,
         tenderId: tender_id,
         correlationId,
         startedAt: new Date().toISOString(),
@@ -154,7 +161,7 @@ export class WorkflowRunner {
     try {
       let workflow: ReturnType<typeof loadWorkflow>;
       try {
-        workflow = this.workflowLoader(workflowId);
+        workflow = this.workflowLoader(resolvedWorkflowId);
       } catch {
         executionErrorCode = 'WORKFLOW_LOAD_FAILED';
         throw new Error('Workflow load failed');

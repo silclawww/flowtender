@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WorkflowRunner } from '../lib/runner/runner.ts';
-import { preflightWorkflowPayload } from '../lib/tenant-context.ts';
+import {
+  materializeWorkflowPayload,
+  preflightWorkflowPayload,
+} from '../lib/tenant-context.ts';
 import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
 import type { WorkflowDefinition } from '../types/workflow.ts';
 
@@ -101,61 +104,154 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
     'tender-stage2-requirements',
     'tender-stage3-evaluation',
   ]) {
-    assert.deepEqual(preflightWorkflowPayload(workflowId, {
+    assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {
       tender_id: tenderId,
       org_id: orgId,
       user_id: actorId,
       admission_id: admissionId,
-    }), {
+    })), {
+      workflowId,
       payload: { tender_id: tenderId, org_id: orgId },
-      trustedContext: {
-        tender_id: tenderId,
-        org_id: orgId,
-        user_id: actorId,
-        admission_id: admissionId,
-        operation: workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
-      },
     });
-    assert.deepEqual(preflightWorkflowPayload(workflowId, {
+    assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {
       body: { tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId },
-    }), {
+    })), {
+      workflowId,
       payload: { tender_id: tenderId, org_id: orgId },
-      trustedContext: {
-        tender_id: tenderId,
-        org_id: orgId,
-        user_id: actorId,
-        admission_id: admissionId,
-        operation: workflowId === 'tender-stage2-requirements' ? 'stage2' : 'stage3',
-      },
     });
   }
 });
 
 test('Stage 1 keeps source data but recursively strips actor and lease fields', () => {
   for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
-    assert.deepEqual(preflightWorkflowPayload(workflowId, {
+    assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {
       tender_id: tenderId,
       org_id: orgId,
       user_id: actorId,
       admission_id: admissionId,
       file_name: 'source.pdf',
-      nested: { user_id: actorId, keep: 'safe', admission_id: admissionId },
-    }), {
+      nested: {
+        user_id: actorId,
+        keep: 'safe',
+        admission_id: admissionId,
+        body: { legitimate: true },
+      },
+    })), {
+      workflowId,
       payload: {
         tender_id: tenderId,
         org_id: orgId,
         file_name: 'source.pdf',
-        nested: { keep: 'safe' },
+        nested: { keep: 'safe', body: { legitimate: true } },
       },
-      trustedContext: {
+    });
+  }
+});
+
+test('an unclaimable Stage 1 lease performs no business clone, telemetry, or workflow work', async () => {
+  let businessReads = 0;
+  let tableCalls = 0;
+  let workflowLoads = 0;
+  const payload: Record<string, unknown> = {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+  };
+  Object.defineProperty(payload, 'business', {
+    enumerable: true,
+    get() {
+      businessReads += 1;
+      throw new Error('business payload must not be cloned');
+    },
+  });
+  const runner = new WorkflowRunner({
+    async rpc() { return { data: false, error: null }; },
+    from() { tableCalls += 1; throw new Error('telemetry must not run'); },
+  } as never, () => {
+    workflowLoads += 1;
+    throw new Error('workflow must not load');
+  });
+
+  await assert.rejects(
+    runner.run('tender-stage1-pdf', payload),
+    /ADMISSION_UNAVAILABLE/,
+  );
+  assert.equal(businessReads, 0);
+  assert.equal(tableCalls, 0);
+  assert.equal(workflowLoads, 0);
+});
+
+test('claimed Stage 1 rejects hostile graphs before telemetry or workflow nodes', async () => {
+  const cyclic: Record<string, unknown> = { value: 'safe' };
+  cyclic.self = cyclic;
+  const deep: Record<string, unknown> = {};
+  let cursor = deep;
+  for (let index = 0; index < 80; index += 1) {
+    const next: Record<string, unknown> = {};
+    cursor.next = next;
+    cursor = next;
+  }
+  const dangerous = JSON.parse('{"constructor":{"polluted":true}}') as Record<string, unknown>;
+  const large = { value: 'x'.repeat(80 * 1024 * 1024) };
+
+  for (const hostile of [cyclic, deep, dangerous, large]) {
+    let tableCalls = 0;
+    let workflowLoads = 0;
+    const runner = new WorkflowRunner({
+      async rpc(name: string) {
+        assert.equal(name, 'claim_pipeline_admission');
+        return { data: true, error: null };
+      },
+      from() { tableCalls += 1; throw new Error('telemetry must not run'); },
+    } as never, () => {
+      workflowLoads += 1;
+      throw new Error('workflow must not load');
+    });
+
+    await assert.rejects(runner.run('tender-stage1-gaeb', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      hostile,
+    }));
+    assert.equal(tableCalls, 0);
+    assert.equal(workflowLoads, 0);
+  }
+});
+
+test('only the top-level envelope body unwraps and legitimate nested body data survives', () => {
+  const materialized = materializeWorkflowPayload('tender-stage1', preflightWorkflowPayload(
+    'tender-stage1',
+    {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      ignored_outer_business: true,
+      body: {
         tender_id: tenderId,
         org_id: orgId,
         user_id: actorId,
         admission_id: admissionId,
-        operation: 'upload',
+        file_type: 'gaeb',
+        nested: {
+          body: { keep: 'legitimate' },
+          user_id: actorId,
+          admission_id: admissionId,
+        },
       },
-    });
-  }
+    },
+  ));
+
+  assert.equal(materialized.workflowId, 'tender-stage1-gaeb');
+  assert.deepEqual(materialized.payload, {
+    tender_id: tenderId,
+    org_id: orgId,
+    file_type: 'gaeb',
+    nested: { body: { keep: 'legitimate' } },
+  });
 });
 
 function recordingClient() {

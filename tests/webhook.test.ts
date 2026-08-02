@@ -93,6 +93,42 @@ test('the dedicated service credential reaches the expected processing workflow'
   assert.deepEqual(await response.json(), { processing_status: 'details_ready' });
 });
 
+test('Stage 1 format selection is deferred to the post-claim runner boundary', async () => {
+  let calledWorkflow: string | undefined;
+  const request = new Request('https://flowtender.example/api/flow/webhook/tender-metadata', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      tender_id: TENDER_ID,
+      org_id: ORG_ID,
+      user_id: USER_ID,
+      admission_id: ADMISSION_ID,
+      file_type: 'gaeb',
+      nested: { body: { legitimate: true } },
+    }),
+  });
+  const response = await handleWebhookRequest(
+    request,
+    'tender-metadata',
+    async (workflowId) => {
+      calledWorkflow = workflowId;
+      return {
+        execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
+        status: 'done',
+        duration_ms: 1,
+      };
+    },
+    SERVICE_KEY,
+    OPERATOR_KEY,
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(calledWorkflow, 'tender-stage1');
+});
+
 test('telemetry persistence failures return a redacted no-store service response', async () => {
   const response = await handleWebhookRequest(
     webhookRequest(SERVICE_KEY),

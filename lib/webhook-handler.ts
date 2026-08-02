@@ -1,6 +1,7 @@
 import { isServiceAuthorized } from './auth.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
 import { AdmissionControlError } from './admission-control.ts';
+import { IngressError, readJsonIngress } from './ingress.ts';
 
 interface WebhookRunResult {
   execution_id: string;
@@ -18,15 +19,12 @@ type RunWebhook = (
 
 export function resolveWebhookWorkflow(
   path: string,
-  payload: Record<string, unknown>,
 ): string {
   switch (path) {
-    case 'tender-metadata': {
-      const fileType = (payload.file_type as string)
-        || (payload.body as Record<string, unknown>)?.file_type as string
-        || 'pdf';
-      return fileType === 'pdf' ? 'tender-stage1-pdf' : 'tender-stage1-gaeb';
-    }
+    // Stage 1 format selection is intentionally deferred until after the
+    // runner has claimed admission and bounded/sanitized the business body.
+    case 'tender-metadata':
+      return 'tender-stage1';
     case 'tender-details':
       return 'tender-stage2-requirements';
     case 'tender-evaluation':
@@ -43,6 +41,7 @@ export async function handleWebhookRequest(
   runWebhook: RunWebhook,
   configuredServiceKey = process.env.FLOWTENDER_API_KEY,
   configuredOperatorKey = process.env.FLOWTENDER_OPERATOR_KEY,
+  maxIngressBytes?: number,
 ): Promise<Response> {
   if (!isServiceAuthorized(request.headers, configuredServiceKey, configuredOperatorKey)) {
     return Response.json(
@@ -51,17 +50,25 @@ export async function handleWebhookRequest(
     );
   }
 
-  let payload: Record<string, unknown> = {};
+  let payload: Record<string, unknown>;
   try {
-    const text = await request.text();
-    if (text) payload = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    // Existing callers may legitimately send an empty body.
+    payload = await readJsonIngress(request, maxIngressBytes);
+  } catch (error) {
+    if (error instanceof IngressError) {
+      return Response.json(
+        { error_code: error.code },
+        { status: error.status, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    return Response.json(
+      { error_code: 'INVALID_JSON' },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
   }
 
   let workflowId: string;
   try {
-    workflowId = resolveWebhookWorkflow(path, payload);
+    workflowId = resolveWebhookWorkflow(path);
   } catch {
     return Response.json(
       { error: 'Unknown webhook' },

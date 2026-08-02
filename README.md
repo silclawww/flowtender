@@ -197,6 +197,12 @@ Content-Type: application/json
 }
 ```
 
+Webhook and direct-trigger JSON ingress is capped at 75 MiB from both the
+declared `Content-Length` and bytes counted while streaming. This ceiling covers
+the current 50 MiB source-file contract after base64 expansion and JSON
+overhead. Requests that cross it stop before JSON parsing, admission claims,
+telemetry, workflow loading, or paid provider work.
+
 The only unauthenticated operational endpoint is:
 
 ```text
