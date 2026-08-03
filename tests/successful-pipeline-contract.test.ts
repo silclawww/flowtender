@@ -17,7 +17,7 @@ function savedFields(name: string, nodeId: string): string[] {
 
 test('successful Stage 2 and Stage 3 saves retain the complete pilot output contract', () => {
   assert.deepEqual(savedFields('tender-stage2-requirements.json', 'save-requirements'), [
-    'processing_status', 'requirements', 'summary', 'value_breakdown',
+    'processing_status', 'requirements', 'requirements_coverage', 'summary', 'value_breakdown',
   ]);
   assert.deepEqual(savedFields('tender-stage3-evaluation.json', 'save-evaluation'), [
     'bid_recommendation',
