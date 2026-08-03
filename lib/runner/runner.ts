@@ -148,21 +148,39 @@ export class WorkflowRunner {
         ?? (workflowPayload.tender_id as string | undefined);
       const isStageOneUpload = preflight.trustedContext?.operation === 'upload';
 
+      const persistKnownTenderFailure = async (safeErrorCode: SafeErrorCode): Promise<void> => {
+        if (!preflight.trustedContext || !tender_id) return;
+        await persistTenderFailure(this.supabase as unknown as Parameters<typeof persistTenderFailure>[0], {
+          tenderId: tender_id,
+          orgId: preflight.trustedContext.org_id,
+          stage: canonicalProcessingStage(preflight.trustedContext.operation),
+          safeErrorCode,
+          correlationId,
+        });
+      };
+
       // Stage 1 creates the tender inside the workflow, so its telemetry row
       // cannot satisfy the immediate tender foreign key yet. Link the same
       // redacted execution row only after the workflow (including its tender
       // upsert) has completed successfully. Existing-tender stages keep their
       // link from the start.
-      await persistExactlyOneTelemetryRow(() => this.supabase
-      .from('flow_executions')
-      .insert(createExecutionTelemetry({
-        executionId,
-        workflowId: resolvedWorkflowId,
-        tenderId: isStageOneUpload ? null : tender_id,
-        correlationId,
-        startedAt: new Date().toISOString(),
-      }) as any)
-      .select('id'));
+      try {
+        await persistExactlyOneTelemetryRow(() => this.supabase
+        .from('flow_executions')
+        .insert(createExecutionTelemetry({
+          executionId,
+          workflowId: resolvedWorkflowId,
+          tenderId: isStageOneUpload ? null : tender_id,
+          correlationId,
+          startedAt: new Date().toISOString(),
+        }) as any)
+        .select('id'));
+      } catch (error) {
+        if (isTelemetryPersistenceError(error)) {
+          await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+        }
+        throw error;
+      }
 
     let responsePayload: ExecutionItem[] | undefined;
     let executionErrorCode: SafeErrorCode | undefined;
@@ -314,23 +332,25 @@ export class WorkflowRunner {
 
     // Update execution record
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await persistExactlyOneTelemetryRow(() => (this.supabase
-      .from('flow_executions') as any)
-      .update(completion)
-      .eq('id', executionId)
-      .select('id'));
-
-    if (telemetryFailure) throw telemetryFailure;
-
-    if (executionErrorCode && preflight.trustedContext && tender_id) {
-      await persistTenderFailure(this.supabase as unknown as Parameters<typeof persistTenderFailure>[0], {
-        tenderId: tender_id,
-        orgId: preflight.trustedContext.org_id,
-        stage: canonicalProcessingStage(preflight.trustedContext.operation),
-        safeErrorCode: executionErrorCode,
-        correlationId,
-      });
+    try {
+      await persistExactlyOneTelemetryRow(() => (this.supabase
+        .from('flow_executions') as any)
+        .update(completion)
+        .eq('id', executionId)
+        .select('id'));
+    } catch (error) {
+      if (isTelemetryPersistenceError(error)) {
+        await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+      }
+      throw error;
     }
+
+    if (telemetryFailure) {
+      await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+      throw telemetryFailure;
+    }
+
+    if (executionErrorCode) await persistKnownTenderFailure(executionErrorCode);
 
       return {
         execution_id: executionId,

@@ -52,7 +52,7 @@ test('timeout uses a fixed safe code', async () => {
   await persistTenderFailure({
     async rpc(_name, value) {
       parameters = value;
-      return { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 1 }], error: null };
+      return { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 1, processing_attempt_count: 1 }], error: null };
     },
   }, {
     tenderId,
@@ -68,6 +68,9 @@ for (const result of [
   { data: [], error: null },
   { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 0 }], error: null },
   { data: [{ tender_id: tenderId, org_id: 'wrong', affected_count: 1 }], error: null },
+  { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 1 }], error: null },
+  { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 1, processing_attempt_count: 0 }], error: null },
+  { data: [{ tender_id: tenderId, org_id: orgId, affected_count: 1, processing_attempt_count: 1, extra: true }], error: null },
   { data: null, error: { message: 'raw database hostname and customer data' } },
 ]) {
   test('zero-row, mismatched, and database failures fail closed without leakage', async () => {

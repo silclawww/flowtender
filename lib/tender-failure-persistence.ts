@@ -62,12 +62,18 @@ export async function persistTenderFailure(
     const row = Array.isArray(result.data) && result.data.length === 1
       ? result.data[0]
       : null;
+    const rowKeys = row && typeof row === 'object'
+      ? Object.keys(row).sort()
+      : [];
     if (result.error != null
       || !row
       || typeof row !== 'object'
+      || rowKeys.join(',') !== 'affected_count,org_id,processing_attempt_count,tender_id'
       || (row as { tender_id?: unknown }).tender_id !== input.tenderId
       || (row as { org_id?: unknown }).org_id !== input.orgId
-      || (row as { affected_count?: unknown }).affected_count !== 1) {
+      || (row as { affected_count?: unknown }).affected_count !== 1
+      || !Number.isSafeInteger((row as { processing_attempt_count?: unknown }).processing_attempt_count)
+      || Number((row as { processing_attempt_count?: unknown }).processing_attempt_count) <= 0) {
       throw new TenderFailurePersistenceError();
     }
   } catch (error) {

@@ -448,3 +448,60 @@ test('missing, forged, or replayed leases stop every protected workflow before t
     assert.equal(workflowLoads, 0);
   }
 });
+
+for (const failurePoint of ['initial', 'node', 'final'] as const) {
+  test(`${failurePoint} telemetry failure records exactly one durable telemetry failure`, async () => {
+    const failureCalls: Array<Record<string, unknown>> = [];
+    const mutation = (table: string, kind: 'insert' | 'update') => {
+      const value = {
+        eq() { return value; },
+        async select() {
+          const shouldFail = failurePoint === 'initial'
+            ? table === 'flow_executions' && kind === 'insert'
+            : failurePoint === 'node'
+              ? table === 'flow_node_runs' && kind === 'insert'
+              : table === 'flow_executions' && kind === 'update';
+          return shouldFail
+            ? { data: null, error: { message: 'raw database and customer detail' } }
+            : { data: [{}], error: null };
+        },
+      };
+      return value;
+    };
+    const runner = new WorkflowRunner({
+      async rpc(name: string, parameters: Record<string, unknown>) {
+        if (name === 'claim_pipeline_admission') return { data: true, error: null };
+        if (name === 'record_tender_processing_failure') {
+          failureCalls.push(parameters);
+          return { data: [{
+            tender_id: tenderId,
+            org_id: orgId,
+            affected_count: 1,
+            processing_attempt_count: 1,
+          }], error: null };
+        }
+        return { data: true, error: null };
+      },
+      from(table: string) {
+        return {
+          insert() { return mutation(table, 'insert'); },
+          update() { return mutation(table, 'update'); },
+        };
+      },
+    } as never, passthroughWorkflow);
+
+    await assert.rejects(
+      runner.run('tender-stage2-requirements', {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+      }),
+      (error: unknown) => error instanceof TelemetryPersistenceError
+        && !String(error).includes('customer'),
+    );
+    assert.equal(failureCalls.length, 1);
+    assert.equal(failureCalls[0].p_processing_stage, 'stage2');
+    assert.equal(failureCalls[0].p_processing_error_code, 'FLOW_TELEMETRY_FAILED');
+  });
+}
