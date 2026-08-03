@@ -651,7 +651,12 @@ test('adequate actual source remains complete through the Stage 2 and 3 workflow
 
 test('Stage 2 hint fallback records insufficient actual source and forces Stage 3 review', async () => {
   const title = 'Brückensanierung Augsburg';
-  const stage2 = await parseStage2Requirements({ pdf_text: '', title }, 2);
+  const stage2 = await parseStage2Requirements({
+    pdf_texts_extracted: {
+      'ausführliches-leistungsverzeichnis-mit-langem-dateinamen.pdf': '',
+    },
+    title,
+  }, 2);
   const result = await evaluateStage3(stage2.requirements, stage2.parsed.requirements_coverage);
 
   assert.equal(stage2.prepared.extraction_text, `Projekttitel: ${title}`);
