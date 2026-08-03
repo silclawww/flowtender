@@ -31,10 +31,20 @@ function database(claims: boolean[] = [true]) {
   return {
     events,
     client: {
-      async rpc(name: string) {
+      async rpc(name: string, parameters: Record<string, unknown>) {
         events.push(`rpc:${name}`);
         if (name === 'claim_pipeline_admission') {
           return { data: claims[claimIndex++] ?? false, error: null };
+        }
+        if (name === 'claim_tender_processing_stage') {
+          const stage = parameters.p_processing_stage;
+          return { data: [{
+            claimed: true,
+            reason: null,
+            processing_status: stage === 'stage1'
+              ? 'extracting_metadata'
+              : stage === 'stage2' ? 'extracting_details' : 'evaluating',
+          }], error: null };
         }
         return { data: true, error: null };
       },
@@ -72,6 +82,7 @@ test('Stage 2/3 receiver claims before work and releases after every mutation', 
     assert.equal(result.status, 'done');
     assert.deepEqual(result.response_payload, [{ json: { tender_id: tenderId, org_id: orgId } }]);
     assert.equal(db.events[0], 'rpc:claim_pipeline_admission');
+    assert.equal(db.events[1], 'rpc:claim_tender_processing_stage');
     assert.equal(db.events.at(-1), 'rpc:release_pipeline_admission');
     assert.ok(db.events.indexOf('workflow:load') < db.events.lastIndexOf('rpc:release_pipeline_admission'));
     assert.ok(db.events.lastIndexOf('telemetry:select') < db.events.lastIndexOf('rpc:release_pipeline_admission'));
@@ -87,6 +98,7 @@ test('Stage 1 claims before work but leaves the cross-service lease for Tenderly
 
     assert.equal(result.status, 'done');
     assert.equal(db.events[0], 'rpc:claim_pipeline_admission');
+    assert.equal(db.events[1], 'rpc:claim_tender_processing_stage');
     assert.equal(db.events.includes('rpc:release_pipeline_admission'), false);
     assert.deepEqual(result.response_payload, [{ json: {
       tender_id: tenderId,
@@ -141,6 +153,9 @@ test('receiver releases Stage 2/3 and retry leases after telemetry persistence f
             }],
             error: null,
           };
+        }
+        if (name === 'claim_tender_processing_stage') {
+          return { data: [{ claimed: true, reason: null, processing_status: 'extracting_details' }], error: null };
         }
         return { data: true, error: null };
       },

@@ -200,8 +200,9 @@ test('claimed Stage 1 rejects hostile graphs before telemetry or workflow nodes'
     let workflowLoads = 0;
     const runner = new WorkflowRunner({
       async rpc(name: string) {
-        assert.equal(name, 'claim_pipeline_admission');
-        return { data: true, error: null };
+        if (name === 'claim_pipeline_admission') return { data: true, error: null };
+        assert.equal(name, 'claim_tender_processing_stage');
+        return { data: [{ claimed: true, reason: null, processing_status: 'extracting_metadata' }], error: null };
       },
       from() { tableCalls += 1; throw new Error('telemetry must not run'); },
     } as never, () => {
@@ -281,6 +282,18 @@ function recordingClient() {
               org_id: parameters.p_org_id,
               affected_count: 1,
               processing_attempt_count: 1,
+            }],
+            error: null,
+          };
+        }
+        if (name === 'claim_tender_processing_stage') {
+          return {
+            data: [{
+              claimed: true,
+              reason: null,
+              processing_status: parameters.p_processing_stage === 'stage1'
+                ? 'extracting_metadata'
+                : parameters.p_processing_stage === 'stage2' ? 'extracting_details' : 'evaluating',
             }],
             error: null,
           };
@@ -471,6 +484,9 @@ for (const failurePoint of ['initial', 'node', 'final'] as const) {
     const runner = new WorkflowRunner({
       async rpc(name: string, parameters: Record<string, unknown>) {
         if (name === 'claim_pipeline_admission') return { data: true, error: null };
+        if (name === 'claim_tender_processing_stage') {
+          return { data: [{ claimed: true, reason: null, processing_status: 'extracting_details' }], error: null };
+        }
         if (name === 'record_tender_processing_failure') {
           failureCalls.push(parameters);
           return { data: [{

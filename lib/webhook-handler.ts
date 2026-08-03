@@ -1,6 +1,10 @@
 import { isServiceAuthorized } from './auth.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
 import { AdmissionControlError } from './admission-control.ts';
+import {
+  TenderStagePersistenceError,
+  TenderStageTransitionError,
+} from './tender-failure-persistence.ts';
 import { IngressError, readJsonIngress } from './ingress.ts';
 
 interface WebhookRunResult {
@@ -96,6 +100,12 @@ export async function handleWebhookRequest(
     return Response.json(responseData, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     if (error instanceof AdmissionControlError) {
+      return Response.json(
+        { error_code: error.code },
+        { status: error.status, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    if (error instanceof TenderStageTransitionError || error instanceof TenderStagePersistenceError) {
       return Response.json(
         { error_code: error.code },
         { status: error.status, headers: { 'Cache-Control': 'no-store' } },

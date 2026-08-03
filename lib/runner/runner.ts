@@ -26,6 +26,7 @@ import {
 import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
 import {
   canonicalProcessingStage,
+  claimTenderProcessingStage,
   persistTenderFailure,
 } from '../tender-failure-persistence.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
@@ -138,6 +139,15 @@ export class WorkflowRunner {
     }
 
     try {
+      if (preflight.trustedContext) {
+        await claimTenderProcessingStage(this.supabase as unknown as Parameters<typeof claimTenderProcessingStage>[0], {
+          tenderId: preflight.trustedContext.tender_id,
+          orgId: preflight.trustedContext.org_id,
+          stage: canonicalProcessingStage(preflight.trustedContext.operation),
+          isRetry: Boolean(options.retryRootExecutionId),
+        });
+      }
+
       // Business payload traversal is deliberately deferred until the durable
       // admission has been claimed. This prevents rejected/replayed requests
       // from consuming clone, telemetry, parser, or LLM work.
