@@ -591,6 +591,9 @@ WITH run_user AS (
      OR execution.id IN (
        SELECT root_execution_id FROM run_admissions WHERE root_execution_id IS NOT NULL
      )
+     OR execution.correlation_id IN (
+       SELECT root_execution_id::text FROM run_admissions WHERE root_execution_id IS NOT NULL
+     )
      OR execution.correlation_id IN (${correlations})
 ), run_nodes AS (
   SELECT node.* FROM public.flow_node_runs AS node
@@ -623,7 +626,10 @@ SELECT json_build_object(
       AND id NOT IN (SELECT id FROM run_admissions)),
   'unexpected_executions', (SELECT count(*) FROM run_executions
     WHERE (tender_id IS NULL OR tender_id NOT IN (SELECT id FROM run_tenders))
-      AND id NOT IN (SELECT root_execution_id FROM run_admissions WHERE root_execution_id IS NOT NULL)),
+      AND id NOT IN (SELECT root_execution_id FROM run_admissions WHERE root_execution_id IS NOT NULL)
+      AND correlation_id NOT IN (
+        SELECT root_execution_id::text FROM run_admissions WHERE root_execution_id IS NOT NULL
+      )),
   'company_profiles', (SELECT count(*) FROM public.company_profiles WHERE org_id IN (SELECT id FROM run_org)),
   'org_invites', (SELECT count(*) FROM public.org_invites WHERE org_id IN (SELECT id FROM run_org)),
   'requirement_completions', (SELECT count(*) FROM public.org_requirement_completions WHERE org_id IN (SELECT id FROM run_org))
