@@ -120,6 +120,7 @@ test('forged and replayed leases cause zero telemetry and zero workflow work', a
 test('receiver releases Stage 2/3 and retry leases after telemetry persistence failure', async () => {
   for (const retryRootExecutionId of [undefined, 'ae2fbf60-d80a-4c5d-8b5c-24553b620e89']) {
     const events: string[] = [];
+    const failureCalls: Array<Record<string, unknown>> = [];
     const mutation = {
       async select() {
         events.push('telemetry:failed');
@@ -127,8 +128,20 @@ test('receiver releases Stage 2/3 and retry leases after telemetry persistence f
       },
     };
     const client = {
-      async rpc(name: string) {
+      async rpc(name: string, parameters: Record<string, unknown>) {
         events.push(`rpc:${name}`);
+        if (name === 'record_tender_processing_failure') {
+          failureCalls.push(parameters);
+          return {
+            data: [{
+              tender_id: tenderId,
+              org_id: orgId,
+              affected_count: 1,
+              processing_attempt_count: 1,
+            }],
+            error: null,
+          };
+        }
         return { data: true, error: null };
       },
       from(table: string) {
@@ -144,5 +157,17 @@ test('receiver releases Stage 2/3 and retry leases after telemetry persistence f
     );
     assert.equal(events[0], 'rpc:claim_pipeline_admission');
     assert.equal(events.at(-1), 'rpc:release_pipeline_admission');
+    assert.equal(failureCalls.length, 1);
+    assert.deepEqual(failureCalls[0], {
+      p_tender_id: tenderId,
+      p_org_id: orgId,
+      p_processing_stage: 'stage2',
+      p_processing_error_code: 'FLOW_TELEMETRY_FAILED',
+      p_processing_correlation_id: retryRootExecutionId
+        ?? failureCalls[0].p_processing_correlation_id,
+    });
+    assert.match(String(failureCalls[0].p_processing_correlation_id), /^[A-Za-z0-9._:-]{1,128}$/);
+    assert.ok(events.indexOf('rpc:record_tender_processing_failure')
+      < events.indexOf('rpc:release_pipeline_admission'));
   }
 });
