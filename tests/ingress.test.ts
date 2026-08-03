@@ -82,12 +82,13 @@ test('chunked ingress stops at the byte ceiling before workflow work', async () 
     ),
   ]) {
     let runs = 0;
+    let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('{"payload":"'));
         controller.enqueue(new TextEncoder().encode('customer-content-too-large"}'));
-        controller.close();
       },
+      cancel() { cancelled = true; },
     });
     const response = await invoke(
       request(stream),
@@ -96,6 +97,7 @@ test('chunked ingress stops at the byte ceiling before workflow work', async () 
     assert.equal(response.status, 413);
     assert.deepEqual(await response.json(), { error_code: 'PAYLOAD_TOO_LARGE' });
     assert.equal(runs, 0);
+    assert.equal(cancelled, true);
   }
 });
 
