@@ -946,6 +946,70 @@ test('stage 3 rejects an unqualified recommendation when critical eligibility is
   assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
 });
 
+test('stage 3 requires no-bid for blockers regardless of score or coverage override', async () => {
+  const blockingEvaluation = {
+    ...validEvaluation,
+    eligibility_summary: {
+      compliant_count: 1,
+      partial_count: 0,
+      not_met_count: 1,
+      blocking_issues: 1,
+    },
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'compliant', is_blocking: false },
+      { id: 'REQ-002', status: 'not_met', is_blocking: true },
+    ],
+  };
+
+  for (const [score, recommendation] of [
+    [60, 'needs_review'],
+    [70, 'recommend_bid'],
+  ] as const) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage3-evaluation.json',
+      'parse-evaluation',
+      llmResponse({
+        ...blockingEvaluation,
+        strategic_fit_score: score,
+        bid_recommendation: recommendation,
+      }),
+      stage3Context(),
+    );
+  }
+
+  const incompleteCoverageContext: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements_coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
+    } }]],
+  ]);
+  await assertLlmResponseFailsSafely(
+    'tender-stage3-evaluation.json',
+    'parse-evaluation',
+    llmResponse({
+      ...blockingEvaluation,
+      strategic_fit_score: 70,
+      bid_recommendation: 'recommend_bid',
+    }),
+    incompleteCoverageContext,
+  );
+
+  for (const score of [60, 70]) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse({
+        ...blockingEvaluation,
+        strategic_fit_score: score,
+        bid_recommendation: 'recommend_no_bid',
+      }) }],
+      stage3Context(),
+    );
+    assert.equal(result[0][0].json.strategic_fit_score, score);
+    assert.equal(result[0][0].json.bid_recommendation, 'recommend_no_bid');
+  }
+});
+
 test('stage 3 rejects score and recommendation contradictions', async () => {
   for (const evaluation of [
     { ...validEvaluation, strategic_fit_score: 49, bid_recommendation: 'recommend_bid' },
