@@ -24,6 +24,10 @@ import {
   preflightWorkflowPayload,
 } from '../tenant-context.ts';
 import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
+import {
+  canonicalProcessingStage,
+  persistTenderFailure,
+} from '../tender-failure-persistence.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -112,9 +116,10 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = preflight.trustedContext
-      ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
-      : normalizeCorrelationId(options.correlationId, executionId);
+    const correlationId = normalizeCorrelationId(
+      options.retryRootExecutionId ?? options.correlationId,
+      executionId,
+    );
 
     let receiverOwnedLease: string | null = null;
     if (preflight.trustedContext) {
@@ -316,6 +321,16 @@ export class WorkflowRunner {
       .select('id'));
 
     if (telemetryFailure) throw telemetryFailure;
+
+    if (executionErrorCode && preflight.trustedContext && tender_id) {
+      await persistTenderFailure(this.supabase as unknown as Parameters<typeof persistTenderFailure>[0], {
+        tenderId: tender_id,
+        orgId: preflight.trustedContext.org_id,
+        stage: canonicalProcessingStage(preflight.trustedContext.operation),
+        safeErrorCode: executionErrorCode,
+        correlationId,
+      });
+    }
 
       return {
         execution_id: executionId,

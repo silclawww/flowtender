@@ -257,6 +257,7 @@ test('only the top-level envelope body unwraps and legitimate nested body data s
 function recordingClient() {
   const inserts: Array<{ table: string; value: Record<string, unknown> }> = [];
   const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
+  const rpcs: Array<{ name: string; parameters: Record<string, unknown> }> = [];
   const mutation = {
     eq() {
       return mutation;
@@ -269,8 +270,21 @@ function recordingClient() {
   return {
     inserts,
     updates,
+    rpcs,
     client: {
-      async rpc() {
+      async rpc(name: string, parameters: Record<string, unknown>) {
+        rpcs.push({ name, parameters });
+        if (name === 'record_tender_processing_failure') {
+          return {
+            data: [{
+              tender_id: parameters.p_tender_id,
+              org_id: parameters.p_org_id,
+              affected_count: 1,
+              processing_attempt_count: 1,
+            }],
+            error: null,
+          };
+        }
         return { data: true, error: null };
       },
       from(table: string) {
@@ -309,7 +323,7 @@ test('Stage 1 defers its telemetry tender link until the workflow succeeds', asy
   }
 });
 
-test('failed Stage 1 telemetry remains unlinked when no tender was created', async () => {
+test('failed Stage 1 records canonical durable failure after telemetry', async () => {
   const database = recordingClient();
   const runner = new WorkflowRunner(database.client as never, (workflowId) => ({
     id: workflowId,
@@ -328,13 +342,23 @@ test('failed Stage 1 telemetry remains unlinked when no tender was created', asy
     org_id: orgId,
     user_id: actorId,
     admission_id: admissionId,
-  });
+  }, { correlationId: 'tenderly-upload-opaque' });
 
   assert.equal(result.status, 'error');
   const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
   assert.equal(execution?.value.tender_id, null);
   const completion = database.updates.find((entry) => entry.table === 'flow_executions');
   assert.equal('tender_id' in (completion?.value ?? {}), false);
+  assert.deepEqual(database.rpcs.at(-1), {
+    name: 'record_tender_processing_failure',
+    parameters: {
+      p_tender_id: tenderId,
+      p_org_id: orgId,
+      p_processing_stage: 'stage1',
+      p_processing_error_code: 'FLOW_STAGE_FAILED',
+      p_processing_correlation_id: 'tenderly-upload-opaque',
+    },
+  });
 });
 
 function passthroughWorkflow(workflowId: string): WorkflowDefinition {
