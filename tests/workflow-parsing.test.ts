@@ -444,6 +444,25 @@ test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates',
   }
 });
 
+test('stage 3 rejects fabricated eligibility IDs when source requirements are empty or missing', async () => {
+  const tenders = [
+    { id: 'tender-id', requirements: [] },
+    { id: 'tender-id' },
+  ];
+
+  for (const tender of tenders) {
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: tender }]],
+    ]);
+    await assertLlmResponseFailsSafely(
+      'tender-stage3-evaluation.json',
+      'parse-evaluation',
+      llmResponse(validEvaluation),
+      context,
+    );
+  }
+});
+
 test('stage 3 normalizes nested JSON strings and preserves a valid evaluation with distance fields', async () => {
   const nestedEvaluation = {
     ...validEvaluation,
