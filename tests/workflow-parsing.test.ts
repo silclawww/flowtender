@@ -261,6 +261,7 @@ const validRequirement = {
 };
 
 const completeRequirementsCoverage = (requirementCount = 2) => ({
+  source_insufficient: false,
   source_truncated: false,
   source_char_count: 5_000,
   extracted_char_count: 5_000,
@@ -270,11 +271,15 @@ const completeRequirementsCoverage = (requirementCount = 2) => ({
   requirement_limit_reached: false,
 });
 
-async function parseStage2Requirements(sourceText: string, requirementCount: number) {
+async function parseStage2Requirements(
+  source: string | Record<string, unknown>,
+  requirementCount: number,
+) {
+  const tender = typeof source === 'string' ? { pdf_text: source } : source;
   const preparedResult = await codeExecutor.execute(
     { code: workflowCode('tender-stage2-requirements.json', 'prepare-extraction-text') },
     [{ json: {} }],
-    new Map([['load-tender', [{ json: { pdf_text: sourceText } }]]]),
+    new Map([['load-tender', [{ json: tender }]]]),
   );
   const prepared = preparedResult[0][0];
   const requirements = Array.from({ length: requirementCount }, (_, index) => ({
@@ -290,13 +295,14 @@ async function parseStage2Requirements(sourceText: string, requirementCount: num
 }
 
 test('stage 2 records complete source and below-limit requirement coverage', async () => {
-  const sourceText = 'Vollständiger Ausschreibungstext';
+  const sourceText = 'Vollständiger Ausschreibungstext mit ausreichend belastbarem Dokumentinhalt.';
   const { prepared, parsed, requirements } = await parseStage2Requirements(sourceText, 2);
 
   assert.equal(prepared.extraction_text, sourceText);
   assert.deepEqual(parsed, {
     requirements,
     requirements_coverage: {
+      source_insufficient: false,
       source_truncated: false,
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
@@ -315,7 +321,7 @@ test('stage 2 distinguishes source truncation from the exact requirement output 
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
 
-  const saturated = await parseStage2Requirements('kurzer Quelltext', 25);
+  const saturated = await parseStage2Requirements('x'.repeat(50), 25);
   assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, false);
   assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).requirement_count, 25);
   assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, true);
@@ -357,6 +363,7 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
     [{ json: llmResponse(requirements) }],
     new Map([['prepare-extraction-text', [{ json: {
       requirements_coverage: {
+        source_insufficient: false,
         source_truncated: false,
         source_char_count: 5_000,
         extracted_char_count: 5_000,
@@ -579,6 +586,31 @@ const validEvaluation = {
   ],
 };
 
+const allCompliantEvaluation = {
+  ...validEvaluation,
+  eligibility_summary: { compliant_count: 2, partial_count: 0, not_met_count: 0, blocking_issues: 0 },
+  eligibility_requirements: validEvaluation.eligibility_requirements.map((requirement) => ({
+    ...requirement,
+    status: 'compliant',
+  })),
+};
+
+async function evaluateStage3(requirements: unknown, coverage: unknown) {
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements,
+      requirements_coverage: coverage,
+    } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+  ]);
+  return codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(allCompliantEvaluation) }],
+    context,
+  );
+}
+
 function stage3Context(): ExecutionContext {
   return new Map([
     ['load-requirements', [{ json: {
@@ -605,12 +637,47 @@ test('stage 3 preserves recommendations only for complete valid coverage', async
   assert.equal(result[0][0].json.bid_recommendation, 'recommend_bid');
 });
 
+test('adequate actual source remains complete through the Stage 2 and 3 workflows', async () => {
+  const sourceText = 'x'.repeat(50);
+  const stage2 = await parseStage2Requirements(sourceText, 2);
+  const result = await evaluateStage3(stage2.requirements, stage2.parsed.requirements_coverage);
+
+  assert.equal(
+    (stage2.parsed.requirements_coverage as Record<string, unknown>).source_insufficient,
+    false,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'recommend_bid');
+});
+
+test('Stage 2 hint fallback records insufficient actual source and forces Stage 3 review', async () => {
+  const title = 'Brückensanierung Augsburg';
+  const stage2 = await parseStage2Requirements({ pdf_text: '', title }, 2);
+  const result = await evaluateStage3(stage2.requirements, stage2.parsed.requirements_coverage);
+
+  assert.equal(stage2.prepared.extraction_text, `Projekttitel: ${title}`);
+  assert.equal(
+    (stage2.parsed.requirements_coverage as Record<string, unknown>).source_insufficient,
+    true,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(stage2.parsed.requirements_coverage),
+    /Brückensanierung|Projekttitel/,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+});
+
 test('stage 3 forces review for truncated, saturated, missing, or malformed coverage', async () => {
   const coverageVariants: unknown[] = [
+    { ...completeRequirementsCoverage(), source_insufficient: true },
     { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
     { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
     undefined,
     { source_truncated: false, requirement_limit_reached: false },
+    (() => {
+      const legacyCoverage = { ...completeRequirementsCoverage() } as Record<string, unknown>;
+      delete legacyCoverage.source_insufficient;
+      return legacyCoverage;
+    })(),
   ];
 
   for (const coverage of coverageVariants) {
@@ -637,7 +704,7 @@ test('stage 3 rejects contradictory raw recommendations before applying a covera
     ['load-requirements', [{ json: {
       id: 'tender-id',
       requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
-      requirements_coverage: { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
+      requirements_coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
     } }]],
   ]);
   await assertLlmResponseFailsSafely(

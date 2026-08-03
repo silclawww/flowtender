@@ -41,12 +41,14 @@ psql "${psql_args[@]}" \
   --file "$repo_dir/tests/sql/migration-db-simulate-001-drift.sql" \
   --file "$repo_dir/supabase/migrations/004_repair_flowtender_schema.sql" \
   --file "$repo_dir/supabase/migrations/004_repair_flowtender_schema.sql" \
-  --file "$repo_dir/tests/sql/migration-db-assertions.sql" \
   --file "$repo_dir/supabase/migrations/016_durable_processing_failures.sql" \
   --file "$repo_dir/supabase/migrations/017_atomic_tender_stage_claims.sql" \
   --file "$repo_dir/tests/sql/migration-db-seed-pilot-processing.sql" \
   --file "$repo_dir/supabase/migrations/018_recover_stale_pipeline_stages.sql" \
   --file "$repo_dir/supabase/migrations/019_telegram_processing_alerts.sql" \
+  --file "$repo_dir/supabase/migrations/020_requirements_coverage.sql" \
+  --file "$repo_dir/supabase/migrations/020_requirements_coverage.sql" \
+  --file "$repo_dir/tests/sql/migration-db-assertions.sql" \
   --file "$repo_dir/tests/sql/migration-db-pilot-assertions.sql"
 
 FLOWTENDER_TEST_DATABASE_URL="$database_url" \

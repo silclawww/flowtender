@@ -4,6 +4,18 @@ DECLARE
   v_all RECORD;
   v_invalid_confirmation_accepted BOOLEAN := false;
 BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'tenders'
+      AND column_name = 'requirements_coverage'
+      AND data_type = 'jsonb'
+      AND is_nullable = 'YES'
+  ) THEN
+    RAISE EXCEPTION 'nullable jsonb requirements coverage column is missing';
+  END IF;
+
   IF EXISTS (
     SELECT 1
     FROM information_schema.columns
