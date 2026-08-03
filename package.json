@@ -9,6 +9,7 @@
     "test": "for test_file in tests/*.test.ts; do ts-node --esm \"$test_file\" || exit 1; done",
     "test:integration": "bash scripts/test-integration.sh",
     "test:migration-db": "bash scripts/test-migration-db.sh",
+    "probe:deployed-limits": "node scripts/probe-deployed-limits.mjs",
     "cli": "npx ts-node scripts/cli.ts"
   },
   "dependencies": {

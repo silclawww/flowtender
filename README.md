@@ -205,6 +205,60 @@ encoded file and all JSON overhead must still fit within the 4,250,000-byte
 request cap. Requests that cross it stop before JSON parsing, admission claims,
 telemetry, workflow loading, or paid provider work.
 
+### Deployed limit proof
+
+`npm run probe:deployed-limits` is the destructive-but-self-cleaning operator
+proof for the two documented limits. It creates one confirmed disposable auth
+user and personal organisation, uploads a structurally valid 3,000,000-byte
+PDF through the real Tenderly route, verifies completed Stage 1 telemetry, and
+then proves the 3,000,001-byte rejection made no scoped database changes. It
+also sends valid JSON bodies of exactly 4,250,000 and 4,250,001 bytes to an
+unknown authenticated Flowtender webhook and expects the normal 404 followed
+by a pre-routing 413.
+
+The probe prints only status codes, byte counts, zero-delta assertions, and
+cleanup state. In `finally`, an owner `psql` connection deletes the exact
+disposable telemetry, admission, tender, organisation, membership, and profile
+rows before the auth-admin user is deleted. Credentials are read only from the
+environment. Never redirect shell tracing or secret-bearing environment output
+into the evidence record.
+
+Required inputs:
+
+```text
+P04_PROBE_CONFIRM=CREATE_AND_DELETE_DISPOSABLE_P04_ROWS
+P04_PROBE_TENDERLY_ORIGIN=https://<deployed-tenderly-origin>
+P04_PROBE_FLOWTENDER_ORIGIN=https://<deployed-flowtender-origin>
+P04_PROBE_SUPABASE_URL=https://<project-ref>.supabase.co
+P04_PROBE_SUPABASE_ANON_KEY=<anon-key>
+P04_PROBE_SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+P04_PROBE_FLOWTENDER_API_KEY=<Tenderly-to-Flowtender-key>
+P04_PROBE_DATABASE_URL=<owner-or-postgres-connection-url>
+```
+
+For a protected Vercel preview, also set either or both linked checkout paths;
+the script then uses `vercel curl` for that target so preview protection remains
+enabled. The temporary curl configuration is mode `0600` and is deleted by the
+same `finally` cleanup.
+
+```text
+P04_PROBE_TENDERLY_VERCEL_CWD=/absolute/path/to/linked/tenderly/checkout
+P04_PROBE_FLOWTENDER_VERCEL_CWD=/absolute/path/to/linked/flowtender/checkout
+```
+
+Run the proof from an untraced shell after both origins have the intended
+builds and point to the same Supabase project:
+
+```bash
+npm run probe:deployed-limits
+```
+
+Roll out in dependency order: verify Flowtender's exact JSON ingress on its
+preview first; promote Flowtender; then run this full proof with the Tenderly
+preview and promoted Flowtender origin. Promote Tenderly only after all four
+checks and all three cleanup fields report success. Finally repeat the full
+proof against both production origins and retain only the emitted JSON.
+
 The only unauthenticated operational endpoint is:
 
 ```text
