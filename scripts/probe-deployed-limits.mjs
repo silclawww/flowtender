@@ -196,10 +196,8 @@ export function buildDatabaseProcessEnvironment(
 ) {
   const url = new URL(validateDatabaseUrl(value));
   const environment = { ...ambient };
-  for (const name of [
-    'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGSSLMODE', 'PGOPTIONS',
-  ]) {
-    delete environment[name];
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('PG')) delete environment[name];
   }
   const pgOptions = buildDatabasePgOptions(value, { readOnly });
   return {
