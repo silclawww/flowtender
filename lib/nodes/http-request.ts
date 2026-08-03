@@ -1,4 +1,31 @@
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+import {
+  NonRetryableError,
+  WorkflowDeadlineError,
+  isNonRetryableError,
+} from '../retry-errors.ts';
+
+const MAX_RETRIES = 3;
+const MAX_RETRY_AFTER_MS = 5_000;
+
+function requestTimeout(timeoutMs: number): NonRetryableError {
+  return new NonRetryableError(`HTTP request timed out after ${timeoutMs}ms`);
+}
+
+function retryAfterDelayMs(value: string | null): number {
+  const delaySeconds = value?.trim() ?? '';
+  if (!/^[0-9]+$/.test(delaySeconds)) return MAX_RETRY_AFTER_MS;
+  const seconds = Number(delaySeconds);
+  return Number.isFinite(seconds) ? seconds * 1000 : Number.POSITIVE_INFINITY;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    throw new NonRetryableError('HTTP response cleanup failed');
+  }
+}
 
 // Evaluate {{ expression }} templates against execution context
 function evalTemplate(
@@ -25,7 +52,7 @@ function evalTemplate(
 }
 
 export const httpRequestExecutor: NodeExecutor = {
-  async execute(config, input, context) {
+  async execute(config, input, context, runtime) {
     const method = (config.method as string || 'POST').toUpperCase();
     const $inputHelper = { first: () => input[0] || { json: {} }, all: () => input };
     const $json = $inputHelper.first().json;
@@ -53,29 +80,47 @@ export const httpRequestExecutor: NodeExecutor = {
     }
     
     // Fetch with retry on 429 and configurable timeout (default 120s)
-    const timeoutMs = typeof config.timeout_ms === 'number' ? config.timeout_ms : 120_000;
-    const MAX_RETRIES = 3;
+    const configuredTimeoutMs = typeof config.timeout_ms === 'number' ? config.timeout_ms : 120_000;
+    const workflowDeadline = runtime?.deadline ?? Number.POSITIVE_INFINITY;
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const workflowTimeRemaining = workflowDeadline - Date.now();
+      if (workflowTimeRemaining <= 0) throw new WorkflowDeadlineError();
+      const timeoutMs = Math.min(configuredTimeoutMs, workflowTimeRemaining);
       const controller = new AbortController();
+      const attemptDeadline = Date.now() + timeoutMs;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const resp = await fetch(url, { method, headers, body, signal: controller.signal });
-        clearTimeout(timer);
         
         if (resp.status === 429) {
-          lastError = new Error('HTTP 429: rate limit');
-          if (attempt === MAX_RETRIES) break;
-          const retryAfter = parseInt(resp.headers.get('retry-after') || '5', 10);
-          const waitMs = (isNaN(retryAfter) ? 5 : retryAfter) * 1000;
+          await cancelResponseBody(resp);
+          if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
+          if (Date.now() >= attemptDeadline) throw requestTimeout(timeoutMs);
+          if (attempt === MAX_RETRIES) {
+            throw new NonRetryableError('HTTP 429: rate limit');
+          }
+          const requestedWaitMs = retryAfterDelayMs(resp.headers.get('retry-after'));
+          const remainingMs = Math.max(0, attemptDeadline - Date.now());
+          if (remainingMs <= 0) {
+            throw Date.now() >= workflowDeadline
+              ? new WorkflowDeadlineError()
+              : requestTimeout(timeoutMs);
+          }
+          const waitMs = Math.min(requestedWaitMs, MAX_RETRY_AFTER_MS, remainingMs);
           console.log(`[http_request] 429 rate limit, waiting ${waitMs}ms before retry ${attempt + 1}/${MAX_RETRIES}`);
           await new Promise(r => setTimeout(r, waitMs));
+          if (Date.now() >= attemptDeadline) {
+            throw Date.now() >= workflowDeadline
+              ? new WorkflowDeadlineError()
+              : requestTimeout(timeoutMs);
+          }
           continue;
         }
         
         if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`HTTP ${resp.status}: ${text.substring(0, 200)}`);
+          await resp.text();
+          throw new Error(`HTTP ${resp.status}`);
         }
         
         const contentType = resp.headers.get('content-type') || '';
@@ -85,16 +130,20 @@ export const httpRequestExecutor: NodeExecutor = {
         } else {
           responseJson = { text: await resp.text() };
         }
+        if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
+        if (Date.now() >= attemptDeadline) throw requestTimeout(timeoutMs);
         
         return [[{ json: responseJson }]];
       } catch (err) {
-        clearTimeout(timer);
+        if (isNonRetryableError(err)) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
-        if (lastError.name === 'AbortError') {
-          throw new Error(`HTTP request timed out after ${timeoutMs}ms: ${url}`);
+        if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
+        if (lastError.name === 'AbortError' || Date.now() >= attemptDeadline) {
+          throw requestTimeout(timeoutMs);
         }
-        if (attempt < MAX_RETRIES && lastError.message.includes('429')) continue;
         break;
+      } finally {
+        clearTimeout(timer);
       }
     }
     throw lastError || new Error('HTTP request failed');

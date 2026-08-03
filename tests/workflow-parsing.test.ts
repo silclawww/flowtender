@@ -696,6 +696,50 @@ test('stage 3 rejects an unqualified recommendation when critical eligibility is
       'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(evaluation), criticalContext,
     );
   }
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse({ ...criticalPartial, bid_recommendation: 'needs_review' }) }],
+    criticalContext,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+});
+
+test('stage 3 rejects score and recommendation contradictions', async () => {
+  for (const evaluation of [
+    { ...validEvaluation, strategic_fit_score: 49, bid_recommendation: 'recommend_bid' },
+    { ...validEvaluation, strategic_fit_score: 50, bid_recommendation: 'recommend_no_bid' },
+    { ...validEvaluation, strategic_fit_score: 69, bid_recommendation: 'recommend_bid' },
+    { ...validEvaluation, strategic_fit_score: 70, bid_recommendation: 'needs_review' },
+  ]) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage3-evaluation.json',
+      'parse-evaluation',
+      llmResponse(evaluation),
+      stage3Context(),
+    );
+  }
+});
+
+test('stage 3 accepts the exact score and recommendation boundaries', async () => {
+  for (const [score, recommendation] of [
+    [49, 'recommend_no_bid'],
+    [50, 'needs_review'],
+    [69, 'needs_review'],
+    [70, 'recommend_bid'],
+  ] as const) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse({
+        ...validEvaluation,
+        strategic_fit_score: score,
+        bid_recommendation: recommendation,
+      }) }],
+      stage3Context(),
+    );
+    assert.equal(result[0][0].json.strategic_fit_score, score);
+    assert.equal(result[0][0].json.bid_recommendation, recommendation);
+  }
 });
 
 test('stage 3 normalizes nested JSON strings and preserves a valid evaluation with distance fields', async () => {
