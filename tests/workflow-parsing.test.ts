@@ -622,6 +622,82 @@ test('stage 3 rejects an otherwise valid evaluation that omits a known requireme
   );
 });
 
+test('stage 3 marks an empty requirement extraction for manual review', async () => {
+  const manualReview = {
+    ...validEvaluation,
+    bid_recommendation: 'needs_review',
+    eligibility_summary: {
+      compliant_count: 0,
+      partial_count: 0,
+      not_met_count: 0,
+      blocking_issues: 0,
+    },
+    eligibility_requirements: [],
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', requirements: [] } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(manualReview) }],
+    context,
+  );
+
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+  assert.equal(result[0][0].json.processing_status, 'complete');
+});
+
+test('stage 3 rejects an unqualified recommendation when critical eligibility is unresolved', async () => {
+  const criticalContext: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001', is_critical: true }, { id: 'REQ-002', is_critical: false }],
+    } }]],
+  ]);
+  const emptyContext: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', requirements: [] } }]],
+  ]);
+  const emptyRecommendation = {
+    ...validEvaluation,
+    eligibility_summary: { compliant_count: 0, partial_count: 0, not_met_count: 0, blocking_issues: 0 },
+    eligibility_requirements: [],
+  };
+  const criticalPartial = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'partial', is_blocking: false },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const hiddenBlocker = {
+    ...validEvaluation,
+    eligibility_summary: { compliant_count: 0, partial_count: 1, not_met_count: 1, blocking_issues: 0 },
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'not_met', is_blocking: false },
+      { id: 'REQ-002', status: 'partial', is_blocking: false },
+    ],
+  };
+  const ignoredBlocker = {
+    ...hiddenBlocker,
+    eligibility_summary: { ...hiddenBlocker.eligibility_summary, blocking_issues: 1 },
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'not_met', is_blocking: true },
+      { id: 'REQ-002', status: 'partial', is_blocking: false },
+    ],
+  };
+
+  await assertLlmResponseFailsSafely(
+    'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(emptyRecommendation), emptyContext,
+  );
+  for (const evaluation of [criticalPartial, hiddenBlocker, ignoredBlocker]) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(evaluation), criticalContext,
+    );
+  }
+});
+
 test('stage 3 normalizes nested JSON strings and preserves a valid evaluation with distance fields', async () => {
   const nestedEvaluation = {
     ...validEvaluation,
