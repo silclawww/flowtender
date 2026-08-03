@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { FLOW_INGRESS_MAX_BYTES } from '../lib/ingress.ts';
 import { handleTriggerRequest } from '../lib/trigger-handler.ts';
 import { handleWebhookRequest } from '../lib/webhook-handler.ts';
 
@@ -24,6 +25,11 @@ const successfulRun = async () => ({
   execution_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   status: 'done' as const,
   duration_ms: 1,
+});
+
+test('production ingress default matches the outbound JSON contract', () => {
+  assert.equal(FLOW_INGRESS_MAX_BYTES, 4_250_000);
+  assert.ok(FLOW_INGRESS_MAX_BYTES < 4_500_000);
 });
 
 test('declared oversized webhook and trigger requests fail before body parsing or workflow work', async () => {

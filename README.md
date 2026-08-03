@@ -197,10 +197,12 @@ Content-Type: application/json
 }
 ```
 
-Webhook and direct-trigger JSON ingress is capped at 75 MiB from both the
-declared `Content-Length` and bytes counted while streaming. This ceiling covers
-the current 50 MiB source-file contract after base64 expansion and JSON
-overhead. Requests that cross it stop before JSON parsing, admission claims,
+Webhook and direct-trigger JSON ingress is capped at exactly 4,250,000 bytes
+from both the declared `Content-Length` and bytes counted while streaming. This
+matches Tenderly's outbound JSON cap and leaves margin below Vercel's 4,500,000-
+byte request-body ceiling. Tenderly's source-file limit is 3,000,000 bytes; the
+encoded file and all JSON overhead must still fit within the 4,250,000-byte
+request cap. Requests that cross it stop before JSON parsing, admission claims,
 telemetry, workflow loading, or paid provider work.
 
 The only unauthenticated operational endpoint is:
