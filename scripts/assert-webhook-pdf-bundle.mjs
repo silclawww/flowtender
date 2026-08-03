@@ -13,12 +13,13 @@ const trace = JSON.parse(await readFile(tracePath, 'utf8'));
 const files = Array.isArray(trace.files) ? trace.files : [];
 const hasPdfParse = files.some((file) => file.includes('/node_modules/pdf-parse/'));
 const hasPdfJs = files.some((file) => file.includes('/node_modules/pdfjs-dist/'));
+const hasPdfWorker = files.some((file) => file.endsWith('/pdf.worker.mjs'));
 const hasCanvas = files.some((file) => file.includes('/node_modules/@napi-rs/canvas/'));
 const hasNativeCanvas = files.some((file) => (
   /\/node_modules\/@napi-rs\/canvas(?:-[^/]+)?\/.*\.node$/.test(file)
 ));
 
-if (!hasPdfParse || !hasPdfJs || !hasCanvas || !hasNativeCanvas) {
+if (!hasPdfParse || !hasPdfJs || !hasPdfWorker || !hasCanvas || !hasNativeCanvas) {
   throw new Error('Webhook bundle is missing the Stage 1 PDF runtime');
 }
 

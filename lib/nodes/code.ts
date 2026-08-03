@@ -5,8 +5,11 @@ import * as zlib from 'node:zlib';
 
 import '@napi-rs/canvas';
 import * as pdfParse from 'pdf-parse';
+import { getPath as getPdfWorkerPath } from 'pdf-parse/worker';
 
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+
+pdfParse.PDFParse.setWorker(getPdfWorkerPath());
 
 // Modules allowed in code nodes (safe subset)
 const ALLOWED_MODULES = new Map<string, object>([
