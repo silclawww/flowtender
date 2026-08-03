@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as util from 'node:util';
 import * as zlib from 'node:zlib';
 
+import '@napi-rs/canvas';
 import * as pdfParse from 'pdf-parse';
 
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
