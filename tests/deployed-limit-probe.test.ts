@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { PDFParse } from 'pdf-parse';
@@ -7,9 +10,16 @@ import { PDFParse } from 'pdf-parse';
 import { codeExecutor } from '../lib/nodes/code.ts';
 import {
   buildExactJson,
+  buildExactCleanupSql,
   buildExactPdf,
   FLOW_JSON_MAX_BYTES,
   RAW_PDF_MAX_BYTES,
+  SUPABASE_PROJECT_REF,
+  validateDatabaseUrl,
+  validateDeployedOrigin,
+  validateSupabaseOrigin,
+  validateVercelCwd,
+  VERCEL_ORG_ID,
 } from '../scripts/probe-deployed-limits.mjs';
 
 test('deployed probe bodies have exact byte lengths and valid PDF/JSON semantics', async () => {
@@ -50,4 +60,108 @@ test('deployed probe bodies have exact byte lengths and valid PDF/JSON semantics
     assert.equal(typeof value.probe, 'string');
     assert.deepEqual(Object.keys(value), ['probe']);
   }
+});
+
+test('deployed probe hard-binds every credential-bearing HTTP origin', () => {
+  assert.equal(
+    validateDeployedOrigin('tenderly', 'https://tenderly-agent.vercel.app'),
+    'https://tenderly-agent.vercel.app',
+  );
+  assert.equal(
+    validateDeployedOrigin(
+      'flowtender',
+      'https://flowtender-git-p04-abc123-silclaws-projects.vercel.app',
+    ),
+    'https://flowtender-git-p04-abc123-silclaws-projects.vercel.app',
+  );
+  assert.equal(
+    validateSupabaseOrigin(`https://${SUPABASE_PROJECT_REF}.supabase.co`),
+    `https://${SUPABASE_PROJECT_REF}.supabase.co`,
+  );
+
+  for (const origin of [
+    'https://attacker.example',
+    'https://tenderly-agent.vercel.app.attacker.example',
+    'https://tenderly-agent.vercel.app:444',
+    'http://tenderly-agent.vercel.app',
+    'https://tenderly-agent.vercel.app/api/upload',
+    'https://tenderly-agent-abc-another-team.vercel.app',
+  ]) {
+    assert.throws(() => validateDeployedOrigin('tenderly', origin));
+  }
+  assert.throws(() => validateSupabaseOrigin('https://another-project.supabase.co'));
+  assert.throws(() => validateSupabaseOrigin(
+    `https://${SUPABASE_PROJECT_REF}.supabase.co.attacker.example`,
+  ));
+});
+
+test('database URLs are bound to the deployed Supabase project', () => {
+  const direct = `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
+  const pooler = `postgres://postgres.${SUPABASE_PROJECT_REF}:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full`;
+  assert.equal(validateDatabaseUrl(direct), direct);
+  assert.equal(validateDatabaseUrl(pooler), pooler);
+
+  for (const value of [
+    'postgresql://postgres:secret@db.other-project.supabase.co:5432/postgres',
+    'postgresql://postgres:secret@attacker.example:5432/postgres',
+    'postgresql://postgres.other-project:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres',
+    `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/other`,
+    `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?application_name=probe`,
+  ]) {
+    assert.throws(() => validateDatabaseUrl(value));
+  }
+});
+
+test('Vercel CLI directories must be linked to the exact team and project', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'p04-vercel-binding-'));
+  try {
+    await mkdir(join(directory, '.vercel'));
+    await writeFile(join(directory, '.vercel', 'project.json'), JSON.stringify({
+      orgId: VERCEL_ORG_ID,
+      projectId: 'prj_mZPi4oO3m5AfGwDQpGzmm7z6Wxem',
+    }));
+    assert.equal(await validateVercelCwd('flowtender', directory), directory);
+    await writeFile(join(directory, '.vercel', 'project.json'), JSON.stringify({
+      orgId: VERCEL_ORG_ID,
+      projectId: 'prj_wrong',
+    }));
+    await assert.rejects(validateVercelCwd('flowtender', directory));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('cleanup SQL deletes only captured IDs and the composite node identity', () => {
+  const executionId = '66666666-6666-4666-8666-666666666666';
+  const sql = buildExactCleanupSql({
+    user_ids: ['11111111-1111-4111-8111-111111111111'],
+    org_ids: ['22222222-2222-4222-8222-222222222222'],
+    membership_ids: ['33333333-3333-4333-8333-333333333333'],
+    tender_ids: ['44444444-4444-4444-8444-444444444444'],
+    admissions: [{ id: '55555555-5555-4555-8555-555555555555' }],
+    executions: [{ id: executionId }],
+    nodes: [{ execution_id: executionId, stage: 'trigger' }],
+  }, {
+    correlations: ['p04-limit-exact-token', 'p04-limit-over-token'],
+    email: 'p04-limit-token@probe.invalid',
+    orgName: 'P04 disposable token',
+  });
+
+  assert.match(sql, /DELETE FROM public\.flow_node_runs WHERE \(execution_id, stage\) IN/);
+  assert.match(sql, new RegExp(executionId));
+  assert.match(sql, /DELETE FROM public\.org_members WHERE id = '33333333/);
+  assert.doesNotMatch(sql, /CREATE TEMP TABLE/);
+  assert.doesNotMatch(sql, /SELECT org_id FROM public\.org_members WHERE user_id/);
+  assert.doesNotMatch(sql, /DELETE FROM public\.org_members WHERE \(org_id/);
+});
+
+test('database parity is verified before mutation and gates cleanup', () => {
+  const source = readFileSync(
+    new URL('../scripts/probe-deployed-limits.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.ok(source.indexOf('verifyDatabaseParity(config);') < source.indexOf('await runProbe('));
+  assert.match(source, /if \(config && databaseVerified && state\.userCreateAttempted\)/);
+  assert.match(source, /raw_app_meta_data->>'p04_probe_token'/);
+  assert.doesNotMatch(source, /['"]--yes['"]/);
 });
