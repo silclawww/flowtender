@@ -39,13 +39,15 @@ BEGIN
     WHERE schemaname = 'public'
       AND tablename = 'flow_executions'
       AND indexname = 'idx_flow_executions_workflow_id'
-      AND indexdef LIKE '%USING btree (workflow_id)%'
+      AND indexdef =
+        'CREATE INDEX idx_flow_executions_workflow_id ON public.flow_executions USING btree (workflow_id)'
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname = 'public'
       AND tablename = 'flow_executions'
       AND indexname = 'idx_flow_executions_tender_id'
-      AND indexdef LIKE '%USING btree (tender_id)%'
+      AND indexdef =
+        'CREATE INDEX idx_flow_executions_tender_id ON public.flow_executions USING btree (tender_id)'
   ) THEN
     RAISE EXCEPTION 'flow execution lookup indexes are missing or incorrect';
   END IF;

@@ -164,6 +164,18 @@ test('disposable database gate retries repair 004 and verifies all repaired obje
   ]) {
     assert.match(assertions, new RegExp(objectName));
   }
+  for (const [indexName, columnName] of [
+    ['idx_flow_executions_workflow_id', 'workflow_id'],
+    ['idx_flow_executions_tender_id', 'tender_id'],
+  ]) {
+    assert.match(
+      assertions,
+      new RegExp(
+        `indexdef =\\s*'CREATE INDEX ${indexName} ON public\\.flow_executions USING btree \\(${columnName}\\)'`,
+      ),
+    );
+  }
+  assert.doesNotMatch(assertions, /indexdef\s+LIKE/);
 });
 
 test('rollout recovery evidence forbids raw exports and records backup expiry', () => {
