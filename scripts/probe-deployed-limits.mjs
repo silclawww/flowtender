@@ -710,7 +710,7 @@ function assertStageOneSuccess(scope, state, tenderId) {
   requireCondition(scope.executions.length === 1, 'STAGE1_DATABASE_PROOF_FAILED');
   const execution = scope.executions[0];
   requireCondition(
-    execution.id === scope.admissions[0].root_execution_id
+    execution.correlation_id === scope.admissions[0].root_execution_id
       && execution.tender_id === tenderId
       && execution.workflow_id === 'tender-stage1-pdf'
       && execution.status === 'done',
