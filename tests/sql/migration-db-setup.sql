@@ -21,8 +21,22 @@ $$;
 
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE TABLE IF NOT EXISTS public.tenders (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID,
+  processing_status TEXT,
+  notes TEXT,
+  source_link TEXT,
+  submission_link TEXT,
+  status TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS processing_status TEXT;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS source_link TEXT;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS submission_link TEXT;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE public.tenders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE TABLE public.org_members (
   user_id UUID NOT NULL,
   org_id UUID NOT NULL,
