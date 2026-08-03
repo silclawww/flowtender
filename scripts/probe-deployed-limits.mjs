@@ -167,10 +167,11 @@ export function validateDatabaseUrl(value) {
     && (!url.port || url.port === '5432' || url.port === '6543');
   requireCondition(protocolOk && (direct || pooler), error);
   requireCondition(Boolean(url.password) && url.pathname === '/postgres' && !url.hash, error);
+  const sslModes = url.searchParams.getAll('sslmode');
   requireCondition(
-    [...url.searchParams].every(([key, setting]) => (
-      key === 'sslmode' && (setting === 'require' || setting === 'verify-full')
-    )),
+    [...url.searchParams].length === 1
+      && sslModes.length === 1
+      && (sslModes[0] === 'require' || sslModes[0] === 'verify-full'),
     error,
   );
   return value;

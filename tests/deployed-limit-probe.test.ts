@@ -105,6 +105,9 @@ test('database URLs are bound to the deployed Supabase project', () => {
     'postgresql://postgres:secret@db.other-project.supabase.co:5432/postgres',
     'postgresql://postgres:secret@attacker.example:5432/postgres',
     'postgresql://postgres.other-project:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres',
+    `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres`,
+    `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require&sslmode=require`,
+    `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=disable`,
     `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/other`,
     `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?application_name=probe`,
   ]) {
