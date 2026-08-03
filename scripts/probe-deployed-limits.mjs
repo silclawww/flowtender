@@ -177,6 +177,19 @@ export function validateDatabaseUrl(value) {
   return value;
 }
 
+export function buildDatabasePgOptions(value, { readOnly = false } = {}) {
+  const url = new URL(validateDatabaseUrl(value));
+  const settings = [];
+  if (
+    url.hostname === `db.${SUPABASE_PROJECT_REF}.supabase.co`
+      && decodeURIComponent(url.username) === 'cli_login_postgres'
+  ) {
+    settings.push('role=postgres');
+  }
+  if (readOnly) settings.push('default_transaction_read_only=on');
+  return settings.length > 0 ? settings.map((setting) => `-c ${setting}`).join(' ') : null;
+}
+
 export async function validateVercelCwd(target, value) {
   if (!value) return null;
   const binding = TARGETS[target];
@@ -445,6 +458,9 @@ function sqlLiteral(value) {
 }
 
 function runSql(config, sql, failureCode, { readOnly = false } = {}) {
+  const environment = { ...process.env };
+  delete environment.PGOPTIONS;
+  const pgOptions = buildDatabasePgOptions(config.databaseUrl, { readOnly });
   const result = spawnSync('psql', [
     '--no-psqlrc',
     '--set', 'ON_ERROR_STOP=1',
@@ -455,10 +471,10 @@ function runSql(config, sql, failureCode, { readOnly = false } = {}) {
     input: sql,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...environment,
       PGDATABASE: config.databaseUrl,
       PGCONNECT_TIMEOUT: '15',
-      ...(readOnly ? { PGOPTIONS: '-c default_transaction_read_only=on' } : {}),
+      ...(pgOptions ? { PGOPTIONS: pgOptions } : {}),
     },
     timeout: 30_000,
     maxBuffer: RESPONSE_MAX_BYTES,

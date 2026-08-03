@@ -12,6 +12,7 @@ import {
   buildExactJson,
   buildExactCleanupSql,
   buildExactPdf,
+  buildDatabasePgOptions,
   buildVercelCurlPlan,
   FLOW_JSON_MAX_BYTES,
   RAW_PDF_MAX_BYTES,
@@ -120,6 +121,28 @@ test('database URLs are bound to the deployed Supabase project', () => {
   ]) {
     assert.throws(() => validateDatabaseUrl(value));
   }
+});
+
+test('short-lived CLI database role composes only with its exact direct URL', () => {
+  const shortLivedDirect = `postgresql://cli_login_postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
+  const normalDirect = `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
+  const pooler = `postgres://postgres.${SUPABASE_PROJECT_REF}:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full`;
+
+  assert.equal(buildDatabasePgOptions(shortLivedDirect), '-c role=postgres');
+  assert.equal(
+    buildDatabasePgOptions(shortLivedDirect, { readOnly: true }),
+    '-c role=postgres -c default_transaction_read_only=on',
+  );
+  assert.equal(buildDatabasePgOptions(normalDirect), null);
+  assert.equal(buildDatabasePgOptions(pooler), null);
+  assert.equal(
+    buildDatabasePgOptions(normalDirect, { readOnly: true }),
+    '-c default_transaction_read_only=on',
+  );
+  assert.equal(
+    buildDatabasePgOptions(pooler, { readOnly: true }),
+    '-c default_transaction_read_only=on',
+  );
 });
 
 test('Vercel CLI directories must be linked to the exact team and project', async () => {
