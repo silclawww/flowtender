@@ -281,5 +281,7 @@ test('database parity is verified before mutation and gates cleanup', () => {
   assert.ok(source.indexOf('verifyDatabaseParity(config);') < source.indexOf('await runProbe('));
   assert.match(source, /if \(config && databaseVerified && state\.userCreateAttempted\)/);
   assert.match(source, /raw_app_meta_data->>'p04_probe_token'/);
+  assert.match(source, /execution\.correlation_id IN \(\s*SELECT root_execution_id::text FROM run_admissions/);
+  assert.match(source, /correlation_id NOT IN \(\s*SELECT root_execution_id::text FROM run_admissions/);
   assert.doesNotMatch(source, /['"]--yes['"]/);
 });
