@@ -1,7 +1,21 @@
+import * as crypto from 'node:crypto';
+import * as path from 'node:path';
+import * as util from 'node:util';
+import * as zlib from 'node:zlib';
+
+import '@napi-rs/canvas';
+import * as pdfParse from 'pdf-parse';
+
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
 
 // Modules allowed in code nodes (safe subset)
-const ALLOWED_MODULES = ['crypto', 'util', 'path', 'zlib', 'pdf-parse'];
+const ALLOWED_MODULES = new Map<string, object>([
+  ['crypto', crypto],
+  ['util', util],
+  ['path', path],
+  ['zlib', zlib],
+  ['pdf-parse', pdfParse],
+]);
 
 export const codeExecutor: NodeExecutor = {
   async execute(config, input, context) {
@@ -24,8 +38,9 @@ export const codeExecutor: NodeExecutor = {
     
     // Restricted require
     const safeRequire = (mod: string) => {
-      if (!ALLOWED_MODULES.includes(mod)) throw new Error(`require('${mod}') not allowed in code nodes`);
-      return require(mod);
+      const loadedModule = ALLOWED_MODULES.get(mod);
+      if (!loadedModule) throw new Error(`require('${mod}') not allowed in code nodes`);
+      return loadedModule;
     };
     
     try {

@@ -1,4 +1,4 @@
-export const FLOW_INGRESS_MAX_BYTES = 75 * 1024 * 1024;
+export const FLOW_INGRESS_MAX_BYTES = 4_250_000;
 
 export class IngressError extends Error {
   readonly status: 400 | 413;

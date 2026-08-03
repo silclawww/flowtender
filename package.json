@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/assert-webhook-pdf-bundle.mjs",
     "start": "next start",
     "test": "for test_file in tests/*.test.ts; do ts-node --esm \"$test_file\" || exit 1; done",
     "test:integration": "bash scripts/test-integration.sh",
     "test:migration-db": "bash scripts/test-migration-db.sh",
+    "probe:deployed-limits": "node scripts/probe-deployed-limits.mjs",
     "cli": "npx ts-node scripts/cli.ts"
   },
   "dependencies": {
@@ -32,5 +33,11 @@
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
     "typescript": "^5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.18",
+      "sharp": "0.35.0"
+    }
   }
 }

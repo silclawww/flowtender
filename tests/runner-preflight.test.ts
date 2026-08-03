@@ -256,6 +256,7 @@ test('only the top-level envelope body unwraps and legitimate nested body data s
 
 function recordingClient() {
   const inserts: Array<{ table: string; value: Record<string, unknown> }> = [];
+  const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
   const mutation = {
     eq() {
       return mutation;
@@ -267,6 +268,7 @@ function recordingClient() {
 
   return {
     inserts,
+    updates,
     client: {
       async rpc() {
         return { data: true, error: null };
@@ -277,7 +279,8 @@ function recordingClient() {
             inserts.push({ table, value });
             return mutation;
           },
-          update() {
+          update(value: Record<string, unknown>) {
+            updates.push({ table, value });
             return mutation;
           },
         };
@@ -285,6 +288,54 @@ function recordingClient() {
     },
   };
 }
+
+test('Stage 1 defers its telemetry tender link until the workflow succeeds', async () => {
+  for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
+    const database = recordingClient();
+    const runner = new WorkflowRunner(database.client as never, passthroughWorkflow);
+
+    const result = await runner.run(workflowId, {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+    });
+
+    assert.equal(result.status, 'done');
+    const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
+    assert.equal(execution?.value.tender_id, null);
+    const completion = database.updates.find((entry) => entry.table === 'flow_executions');
+    assert.equal(completion?.value.tender_id, tenderId);
+  }
+});
+
+test('failed Stage 1 telemetry remains unlinked when no tender was created', async () => {
+  const database = recordingClient();
+  const runner = new WorkflowRunner(database.client as never, (workflowId) => ({
+    id: workflowId,
+    name: 'Fail before tender persistence',
+    nodes: [{
+      id: 'fail-before-save',
+      name: 'Fail before save',
+      type: 'unknown' as never,
+      config: {},
+    }],
+    edges: [],
+  }));
+
+  const result = await runner.run('tender-stage1-pdf', {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+  });
+
+  assert.equal(result.status, 'error');
+  const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
+  assert.equal(execution?.value.tender_id, null);
+  const completion = database.updates.find((entry) => entry.table === 'flow_executions');
+  assert.equal('tender_id' in (completion?.value ?? {}), false);
+});
 
 function passthroughWorkflow(workflowId: string): WorkflowDefinition {
   return {

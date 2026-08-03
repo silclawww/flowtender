@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
+import { FLOW_INGRESS_MAX_BYTES } from "./lib/ingress";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@napi-rs/canvas", "pdf-parse"],
   experimental: {
-    proxyClientMaxBodySize: 52428800, // 50 MB
+    proxyClientMaxBodySize: FLOW_INGRESS_MAX_BYTES,
   },
   turbopack: {
     root: process.cwd(),

@@ -197,11 +197,75 @@ Content-Type: application/json
 }
 ```
 
-Webhook and direct-trigger JSON ingress is capped at 75 MiB from both the
-declared `Content-Length` and bytes counted while streaming. This ceiling covers
-the current 50 MiB source-file contract after base64 expansion and JSON
-overhead. Requests that cross it stop before JSON parsing, admission claims,
+Webhook and direct-trigger JSON ingress is capped at exactly 4,250,000 bytes
+from both the declared `Content-Length` and bytes counted while streaming. This
+matches Tenderly's outbound JSON cap and leaves margin below Vercel's 4,500,000-
+byte request-body ceiling. Tenderly's source-file limit is 3,000,000 bytes; the
+encoded file and all JSON overhead must still fit within the 4,250,000-byte
+request cap. Requests that cross it stop before JSON parsing, admission claims,
 telemetry, workflow loading, or paid provider work.
+
+### Deployed limit proof
+
+`npm run probe:deployed-limits` is the destructive-but-self-cleaning operator
+proof for the two documented limits. It creates one confirmed disposable auth
+user and personal organisation, uploads a structurally valid 3,000,000-byte
+PDF through the real Tenderly route, verifies completed Stage 1 telemetry, and
+then proves the 3,000,001-byte rejection made no scoped database changes. It
+also sends valid JSON bodies of exactly 4,250,000 and 4,250,001 bytes to an
+unknown authenticated Flowtender webhook and expects the normal 404 followed
+by a pre-routing 413.
+
+The probe prints only status codes, byte counts, zero-delta assertions, and
+cleanup state. In `finally`, an owner `psql` connection deletes the exact
+disposable telemetry, admission, tender, organisation, membership, and profile
+rows before the auth-admin user is deleted. Credentials are read only from the
+environment. Never redirect shell tracing or secret-bearing environment output
+into the evidence record.
+
+Required inputs:
+
+```text
+P04_PROBE_CONFIRM=CREATE_AND_DELETE_DISPOSABLE_P04_ROWS
+P04_PROBE_TENDERLY_ORIGIN=https://<deployed-tenderly-origin>
+P04_PROBE_FLOWTENDER_ORIGIN=https://<deployed-flowtender-origin>
+P04_PROBE_SUPABASE_URL=https://<project-ref>.supabase.co
+P04_PROBE_SUPABASE_ANON_KEY=<anon-key>
+P04_PROBE_SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+P04_PROBE_FLOWTENDER_API_KEY=<Tenderly-to-Flowtender-key>
+P04_PROBE_DATABASE_URL=<owner-or-postgres-connection-url>
+```
+
+Prefer a short-lived database URL captured in memory from
+`supabase db dump --linked --schema public --dry-run`. Pass the parsed URL only
+to the probe process; do not print it, paste it into this repository, or save it
+to a shell file. The probe accepts that command's `cli_login_postgres` identity
+only on this project's exact direct database host with the existing TLS checks,
+and applies Supabase's matching `role=postgres` session setting only for that
+short-lived identity.
+
+For a protected Vercel preview, also set either or both linked checkout paths;
+the script then uses `vercel curl` for that target so preview protection remains
+enabled. The temporary curl configuration is mode `0600` and is deleted by the
+same `finally` cleanup.
+
+```text
+P04_PROBE_TENDERLY_VERCEL_CWD=/absolute/path/to/linked/tenderly/checkout
+P04_PROBE_FLOWTENDER_VERCEL_CWD=/absolute/path/to/linked/flowtender/checkout
+```
+
+Run the proof from an untraced shell after both origins have the intended
+builds and point to the same Supabase project:
+
+```bash
+npm run probe:deployed-limits
+```
+
+Roll out in dependency order: verify Flowtender's exact JSON ingress on its
+preview first; promote Flowtender; then run this full proof with the Tenderly
+preview and promoted Flowtender origin. Promote Tenderly only after all four
+checks and all three cleanup fields report success. Finally repeat the full
+proof against both production origins and retain only the emitted JSON.
 
 The only unauthenticated operational endpoint is:
 
