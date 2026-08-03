@@ -13,6 +13,7 @@ import {
   buildExactCleanupSql,
   buildExactPdf,
   buildDatabasePgOptions,
+  buildDatabaseProcessEnvironment,
   buildVercelCurlPlan,
   FLOW_JSON_MAX_BYTES,
   RAW_PDF_MAX_BYTES,
@@ -143,6 +144,57 @@ test('short-lived CLI database role composes only with its exact direct URL', ()
     buildDatabasePgOptions(pooler, { readOnly: true }),
     '-c default_transaction_read_only=on',
   );
+});
+
+test('database URL becomes a controlled libpq environment with no ambient connection state', () => {
+  const ambient: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
+    PATH: '/safe/bin',
+    PGHOST: 'ambient-host',
+    PGPORT: '9999',
+    PGUSER: 'ambient-user',
+    PGPASSWORD: 'ambient-password',
+    PGDATABASE: 'ambient-database',
+    PGSSLMODE: 'disable',
+    PGOPTIONS: '-c role=ambient',
+    PGSERVICE: 'ambient-service',
+    PGSERVICEFILE: '/ambient/service.conf',
+    PGPASSFILE: '/ambient/passfile',
+    PGSSLROOTCERT: '/ambient/root.crt',
+    PGSSLCERT: '/ambient/client.crt',
+    PGSSLKEY: '/ambient/client.key',
+    PGCHANNELBINDING: 'disable',
+    PGTARGETSESSIONATTRS: 'read-write',
+    PGFOO: 'ambient-extension',
+  };
+  const cliDirect = `postgresql://cli_login_postgres:s%40cr%3Aet@db.${SUPABASE_PROJECT_REF}.supabase.co/postgres?sslmode=require`;
+  const directEnvironment = buildDatabaseProcessEnvironment(cliDirect, {
+    ambient,
+    readOnly: true,
+  });
+
+  assert.deepEqual(directEnvironment, {
+    NODE_ENV: 'test',
+    PATH: '/safe/bin',
+    PGHOST: `db.${SUPABASE_PROJECT_REF}.supabase.co`,
+    PGPORT: '5432',
+    PGUSER: 'cli_login_postgres',
+    PGPASSWORD: 's@cr:et',
+    PGDATABASE: 'postgres',
+    PGSSLMODE: 'require',
+    PGCONNECT_TIMEOUT: '15',
+    PGOPTIONS: '-c role=postgres -c default_transaction_read_only=on',
+  });
+
+  const pooler = `postgres://postgres.${SUPABASE_PROJECT_REF}:pool%20secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full`;
+  const poolerEnvironment = buildDatabaseProcessEnvironment(pooler, { ambient });
+  assert.equal(poolerEnvironment.PGHOST, 'aws-0-ap-southeast-1.pooler.supabase.com');
+  assert.equal(poolerEnvironment.PGPORT, '6543');
+  assert.equal(poolerEnvironment.PGUSER, `postgres.${SUPABASE_PROJECT_REF}`);
+  assert.equal(poolerEnvironment.PGPASSWORD, 'pool secret');
+  assert.equal(poolerEnvironment.PGDATABASE, 'postgres');
+  assert.equal(poolerEnvironment.PGSSLMODE, 'verify-full');
+  assert.equal(Object.hasOwn(poolerEnvironment, 'PGOPTIONS'), false);
 });
 
 test('Vercel CLI directories must be linked to the exact team and project', async () => {

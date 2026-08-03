@@ -190,6 +190,29 @@ export function buildDatabasePgOptions(value, { readOnly = false } = {}) {
   return settings.length > 0 ? settings.map((setting) => `-c ${setting}`).join(' ') : null;
 }
 
+export function buildDatabaseProcessEnvironment(
+  value,
+  { readOnly = false, ambient = process.env } = {},
+) {
+  const url = new URL(validateDatabaseUrl(value));
+  const environment = { ...ambient };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('PG')) delete environment[name];
+  }
+  const pgOptions = buildDatabasePgOptions(value, { readOnly });
+  return {
+    ...environment,
+    PGHOST: url.hostname,
+    PGPORT: url.port || '5432',
+    PGUSER: decodeURIComponent(url.username),
+    PGPASSWORD: decodeURIComponent(url.password),
+    PGDATABASE: 'postgres',
+    PGSSLMODE: url.searchParams.get('sslmode'),
+    PGCONNECT_TIMEOUT: '15',
+    ...(pgOptions ? { PGOPTIONS: pgOptions } : {}),
+  };
+}
+
 export async function validateVercelCwd(target, value) {
   if (!value) return null;
   const binding = TARGETS[target];
@@ -458,9 +481,6 @@ function sqlLiteral(value) {
 }
 
 function runSql(config, sql, failureCode, { readOnly = false } = {}) {
-  const environment = { ...process.env };
-  delete environment.PGOPTIONS;
-  const pgOptions = buildDatabasePgOptions(config.databaseUrl, { readOnly });
   const result = spawnSync('psql', [
     '--no-psqlrc',
     '--set', 'ON_ERROR_STOP=1',
@@ -470,12 +490,7 @@ function runSql(config, sql, failureCode, { readOnly = false } = {}) {
   ], {
     input: sql,
     encoding: 'utf8',
-    env: {
-      ...environment,
-      PGDATABASE: config.databaseUrl,
-      PGCONNECT_TIMEOUT: '15',
-      ...(pgOptions ? { PGOPTIONS: pgOptions } : {}),
-    },
+    env: buildDatabaseProcessEnvironment(config.databaseUrl, { readOnly }),
     timeout: 30_000,
     maxBuffer: RESPONSE_MAX_BYTES,
   });
