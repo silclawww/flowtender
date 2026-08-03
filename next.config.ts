@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import { FLOW_INGRESS_MAX_BYTES } from "./lib/ingress";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["pdf-parse"],
   experimental: {
     proxyClientMaxBodySize: FLOW_INGRESS_MAX_BYTES,
   },
