@@ -97,13 +97,30 @@ test('daily TTL enforcement documents the seven-day cutoff and under-eight-day m
   assert.doesNotMatch(`${sql}\n${readme}`, /at most (?:7|seven) days/i);
 });
 
-test('a guarded disposable-database gate applies 001 then retry-safe 002', () => {
+test('a guarded disposable-database gate applies the canonical overlay through retry-safe 020', () => {
   const script = readFileSync(dbTestPath, 'utf8');
   assert.match(script, /FLOWTENDER_TEST_DATABASE_DISPOSABLE/);
   assert.match(script, /refusing non-local database URL/);
   assert.match(script, /001_flowtender_schema\.sql/);
   assert.equal((script.match(/002_secure_redacted_telemetry\.sql/g) ?? []).length, 2);
+  assert.equal((script.match(/020_requirements_coverage\.sql/g) ?? []).length, 2);
+  assert.ok(
+    script.indexOf('019_telegram_processing_alerts.sql') <
+      script.indexOf('020_requirements_coverage.sql'),
+  );
   assert.match(script, /migration-db-assertions\.sql/);
+  assert.ok(
+    script.lastIndexOf('020_requirements_coverage.sql') <
+      script.indexOf('migration-db-assertions.sql'),
+  );
+});
+
+test('disposable database assertions verify nullable jsonb requirements coverage', () => {
+  const sql = readFileSync(dbAssertionsPath, 'utf8');
+
+  assert.match(sql, /column_name = 'requirements_coverage'/);
+  assert.match(sql, /data_type = 'jsonb'/);
+  assert.match(sql, /is_nullable = 'YES'/);
 });
 
 test('disposable database assertions verify the complete telemetry privilege boundary', () => {
@@ -195,4 +212,11 @@ test('rollout recovery evidence forbids raw exports and records backup expiry', 
   assert.match(rollout, /raw telemetry export/i);
   assert.match(rollout, /retention/i);
   assert.match(rollout, /expiry/i);
+});
+
+test('Flowtender README documents the canonical migration overlay through 020', () => {
+  const readme = readFileSync(readmePath, 'utf8');
+
+  assert.match(readme, /`001`–`004`, then `016`–`020`/);
+  assert.match(readme, /Migration `020`/);
 });
