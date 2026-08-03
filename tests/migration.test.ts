@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const migrationPath = new URL('../supabase/migrations/002_secure_redacted_telemetry.sql', import.meta.url);
+const schemaRepairMigrationPath = new URL('../supabase/migrations/004_repair_flowtender_schema.sql', import.meta.url);
 const readmePath = new URL('../README.md', import.meta.url);
 const dbTestPath = new URL('../scripts/test-migration-db.sh', import.meta.url);
 const dbAssertionsPath = new URL('./sql/migration-db-assertions.sql', import.meta.url);
@@ -10,6 +11,10 @@ const rolloutPath = new URL('../docs/flowtender-telemetry-rollout.md', import.me
 
 function migration(): string {
   return readFileSync(migrationPath, 'utf8');
+}
+
+function schemaRepairMigration(): string {
+  return readFileSync(schemaRepairMigrationPath, 'utf8');
 }
 
 test('forward migration removes allow-all policies and direct client grants', () => {
@@ -122,6 +127,55 @@ test('disposable database assertions verify the complete telemetry privilege bou
   assert.match(sql, /FROM cron\.job/);
   assert.match(sql, /schedule = '17 3 \* \* \*'/);
   assert.match(sql, /command = 'SELECT public\.purge_expired_flow_telemetry\(\);'/);
+});
+
+test('schema repair restores only the five pilot integrity and lookup objects', () => {
+  const sql = schemaRepairMigration();
+
+  assert.match(sql, /^BEGIN;/m);
+  assert.match(sql, /^COMMIT;/m);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_flow_executions_workflow_id/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_flow_executions_tender_id/);
+  assert.match(sql, /flow_executions_status_check/);
+  assert.match(sql, /status IN \('pending', 'running', 'done', 'error', 'cancelled'\)/);
+  assert.match(sql, /flow_node_runs_status_check/);
+  assert.match(sql, /status IN \('pending', 'running', 'done', 'error'\)/);
+  assert.match(sql, /flow_executions_tender_id_fkey/);
+  assert.match(sql, /FOREIGN KEY \(tender_id\) REFERENCES public\.tenders\(id\) ON DELETE SET NULL/);
+  assert.doesNotMatch(sql, /^\s*(?:DELETE|DROP|TRUNCATE|UPDATE)\b/im);
+});
+
+test('disposable database gate retries repair 004 and verifies all repaired objects', () => {
+  const script = readFileSync(dbTestPath, 'utf8');
+  const assertions = readFileSync(dbAssertionsPath, 'utf8');
+
+  assert.equal((script.match(/migration-db-simulate-001-drift\.sql/g) ?? []).length, 1);
+  assert.equal((script.match(/004_repair_flowtender_schema\.sql/g) ?? []).length, 2);
+  assert.ok(
+    script.indexOf('migration-db-simulate-001-drift.sql') <
+      script.indexOf('004_repair_flowtender_schema.sql'),
+  );
+  for (const objectName of [
+    'idx_flow_executions_workflow_id',
+    'idx_flow_executions_tender_id',
+    'flow_executions_status_check',
+    'flow_node_runs_status_check',
+    'flow_executions_tender_id_fkey',
+  ]) {
+    assert.match(assertions, new RegExp(objectName));
+  }
+  for (const [indexName, columnName] of [
+    ['idx_flow_executions_workflow_id', 'workflow_id'],
+    ['idx_flow_executions_tender_id', 'tender_id'],
+  ]) {
+    assert.match(
+      assertions,
+      new RegExp(
+        `indexdef =\\s*'CREATE INDEX ${indexName} ON public\\.flow_executions USING btree \\(${columnName}\\)'`,
+      ),
+    );
+  }
+  assert.doesNotMatch(assertions, /indexdef\s+LIKE/);
 });
 
 test('rollout recovery evidence forbids raw exports and records backup expiry', () => {

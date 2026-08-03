@@ -38,6 +38,9 @@ psql "${psql_args[@]}" \
   --file "$repo_dir/supabase/migrations/002_secure_redacted_telemetry.sql" \
   --file "$repo_dir/supabase/migrations/003_pipeline_admission.sql" \
   --file "$repo_dir/supabase/migrations/003_pipeline_admission.sql" \
+  --file "$repo_dir/tests/sql/migration-db-simulate-001-drift.sql" \
+  --file "$repo_dir/supabase/migrations/004_repair_flowtender_schema.sql" \
+  --file "$repo_dir/supabase/migrations/004_repair_flowtender_schema.sql" \
   --file "$repo_dir/tests/sql/migration-db-assertions.sql"
 
 FLOWTENDER_TEST_DATABASE_URL="$database_url" \

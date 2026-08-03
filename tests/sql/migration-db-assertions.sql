@@ -34,6 +34,53 @@ BEGIN
     RAISE EXCEPTION 'execution/stage uniqueness is missing';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND tablename = 'flow_executions'
+      AND indexname = 'idx_flow_executions_workflow_id'
+      AND indexdef =
+        'CREATE INDEX idx_flow_executions_workflow_id ON public.flow_executions USING btree (workflow_id)'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND tablename = 'flow_executions'
+      AND indexname = 'idx_flow_executions_tender_id'
+      AND indexdef =
+        'CREATE INDEX idx_flow_executions_tender_id ON public.flow_executions USING btree (tender_id)'
+  ) THEN
+    RAISE EXCEPTION 'flow execution lookup indexes are missing or incorrect';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_status_check'
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) =
+        'CHECK ((status = ANY (ARRAY[''pending''::text, ''running''::text, ''done''::text, ''error''::text, ''cancelled''::text])))'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_node_runs'::regclass
+      AND conname = 'flow_node_runs_status_check'
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) =
+        'CHECK ((status = ANY (ARRAY[''pending''::text, ''running''::text, ''done''::text, ''error''::text])))'
+  ) THEN
+    RAISE EXCEPTION 'flow telemetry status constraints are missing or incorrect';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.flow_executions'::regclass
+      AND conname = 'flow_executions_tender_id_fkey'
+      AND contype = 'f'
+      AND pg_get_constraintdef(oid) =
+        'FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE SET NULL'
+  ) THEN
+    RAISE EXCEPTION 'flow execution tender foreign key is missing or incorrect';
+  END IF;
+
   IF (SELECT stage FROM public.flow_node_runs
       WHERE execution_id = '10000000-0000-4000-8000-000000000001') IS DISTINCT FROM 'legacy-stage' THEN
     RAISE EXCEPTION 'legacy node_id was not backfilled into stage';
