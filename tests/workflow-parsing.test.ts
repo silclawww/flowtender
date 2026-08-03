@@ -671,6 +671,36 @@ test('Stage 2 hint fallback records insufficient actual source and forces Stage 
   assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
 });
 
+test('Stage 2 excludes fragment separators when measuring actual source adequacy', async () => {
+  const stage2 = await parseStage2Requirements({
+    pdf_texts_extracted: Array.from({ length: 18 }, () => 'x'),
+    title: 'Brückensanierung Augsburg',
+  }, 2);
+  const result = await evaluateStage3(stage2.requirements, stage2.parsed.requirements_coverage);
+
+  assert.equal(
+    (stage2.parsed.requirements_coverage as Record<string, unknown>).source_insufficient,
+    true,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+});
+
+test('Stage 2 prefers an adequate PDF fallback over whitespace-only extracted fragments', async () => {
+  const pdfText = 'Vollständiger Ausschreibungstext mit ausreichend belastbarem Dokumentinhalt.';
+  const stage2 = await parseStage2Requirements({
+    pdf_texts_extracted: ['  ', '\n\t'],
+    pdf_text: pdfText,
+  }, 2);
+  const result = await evaluateStage3(stage2.requirements, stage2.parsed.requirements_coverage);
+
+  assert.equal(stage2.prepared.extraction_text, pdfText);
+  assert.equal(
+    (stage2.parsed.requirements_coverage as Record<string, unknown>).source_insufficient,
+    false,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'recommend_bid');
+});
+
 test('stage 3 forces review for truncated, saturated, missing, or malformed coverage', async () => {
   const coverageVariants: unknown[] = [
     { ...completeRequirementsCoverage(), source_insufficient: true },
