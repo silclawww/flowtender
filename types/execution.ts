@@ -31,10 +31,15 @@ export interface WorkflowExecution {
 
 export type ExecutionContext = Map<string, ExecutionItem[]>;
 
+export interface ExecutionRuntime {
+  deadline?: number;
+}
+
 export interface NodeExecutor {
   execute(
     config: Record<string, unknown>,
     input: ExecutionItem[],
-    context: ExecutionContext
+    context: ExecutionContext,
+    runtime?: ExecutionRuntime,
   ): Promise<ExecutionItem[][]>;
 }

@@ -25,6 +25,10 @@ import {
 } from '../tenant-context.ts';
 import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
 import {
+  isNonRetryableError,
+  WorkflowDeadlineError,
+} from '../retry-errors.ts';
+import {
   canonicalProcessingStage,
   claimTenderProcessingStage,
   persistTenderFailure,
@@ -40,26 +44,39 @@ async function executeWithRetry(
   config: Record<string, unknown>,
   input: ExecutionItem[],
   context: ExecutionContext,
-  retry: NodeRetryConfig = {}
+  retry: NodeRetryConfig = {},
+  deadline = Number.POSITIVE_INFINITY,
 ): Promise<ExecutionItem[][]> {
   const maxAttempts = retry.max_attempts ?? 1;
   const delayMs = retry.delay_ms ?? 1000;
   const backoff = retry.backoff ?? 'linear';
   
   let lastError: Error | undefined;
+
+  const requireTimeRemaining = (): number => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new WorkflowDeadlineError();
+    return remaining;
+  };
   
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    requireTimeRemaining();
     try {
-      return await executor.execute(config, input, context);
+      const result = await executor.execute(config, input, context, { deadline });
+      requireTimeRemaining();
+      return result;
     } catch (err) {
+      if (isNonRetryableError(err)) throw err;
       lastError = err instanceof Error ? err : new Error(String(err));
       
       if (attempt < maxAttempts) {
-        const wait = backoff === 'exponential' 
+        const requestedWait = backoff === 'exponential'
           ? delayMs * Math.pow(2, attempt - 1)
           : delayMs * attempt;
+        const wait = Math.min(requestedWait, requireTimeRemaining());
         console.warn(`[runner] node retry ${attempt}/${maxAttempts}, waiting ${wait}ms...`);
         await new Promise(resolve => setTimeout(resolve, wait));
+        requireTimeRemaining();
       }
     }
   }
@@ -261,7 +278,7 @@ export class WorkflowRunner {
             throw new Error('Unknown node type');
           }
           
-          outputs = await executeWithRetry(executor, node.config, input, context, node.retry);
+          outputs = await executeWithRetry(executor, node.config, input, context, node.retry, timeout);
           
           // For 'respond' nodes, capture the response payload
           if (node.type === 'respond' && synchronous) {
@@ -271,8 +288,10 @@ export class WorkflowRunner {
           // Store this node's output in context (port 0 output)
           context.set(node.id, outputs[0] || []);
 
-        } catch {
-          nodeErrorCode ??= 'NODE_EXECUTION_FAILED';
+        } catch (error) {
+          nodeErrorCode ??= error instanceof WorkflowDeadlineError
+            ? 'EXECUTION_TIMED_OUT'
+            : 'NODE_EXECUTION_FAILED';
           outputs = [[]];
           context.set(node.id, []);
           console.error(`[flowtender] stage ${node.id} failed with ${nodeErrorCode}`);
