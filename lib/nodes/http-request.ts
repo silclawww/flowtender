@@ -61,8 +61,11 @@ export const httpRequestExecutor: NodeExecutor = {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const resp = await fetch(url, { method, headers, body, signal: controller.signal });
+        clearTimeout(timer);
         
         if (resp.status === 429) {
+          lastError = new Error('HTTP 429: rate limit');
+          if (attempt === MAX_RETRIES) break;
           const retryAfter = parseInt(resp.headers.get('retry-after') || '5', 10);
           const waitMs = (isNaN(retryAfter) ? 5 : retryAfter) * 1000;
           console.log(`[http_request] 429 rate limit, waiting ${waitMs}ms before retry ${attempt + 1}/${MAX_RETRIES}`);
@@ -83,7 +86,6 @@ export const httpRequestExecutor: NodeExecutor = {
           responseJson = { text: await resp.text() };
         }
         
-        clearTimeout(timer);
         return [[{ json: responseJson }]];
       } catch (err) {
         clearTimeout(timer);

@@ -25,16 +25,25 @@ async function withFetch(
 
 test('Gemini 429 exhausts its bounded retries and fails the node', async () => {
   let calls = 0;
+  const messages: string[] = [];
+  const originalLog = console.log;
+  console.log = (message?: unknown) => messages.push(String(message));
   await withFetch(async () => {
     calls += 1;
     return new Response('', { status: 429, headers: { 'retry-after': '0' } });
   }, async () => {
-    await assert.rejects(
-      () => httpRequestExecutor.execute(config, [{ json: { prompt: 'synthetic' } }], new Map()),
-      /HTTP request failed/,
-    );
+    try {
+      await assert.rejects(
+        () => httpRequestExecutor.execute(config, [{ json: { prompt: 'synthetic' } }], new Map()),
+        /HTTP 429/,
+      );
+    } finally {
+      console.log = originalLog;
+    }
   });
   assert.equal(calls, 4);
+  assert.equal(messages.length, 3);
+  assert.doesNotMatch(messages.join('\n'), /retry 4\/3/);
 });
 
 test('Gemini 5xx fails without returning a successful node result', async () => {
