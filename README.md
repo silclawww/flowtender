@@ -236,6 +236,12 @@ P04_PROBE_FLOWTENDER_API_KEY=<Tenderly-to-Flowtender-key>
 P04_PROBE_DATABASE_URL=<owner-or-postgres-connection-url>
 ```
 
+Prefer a short-lived database URL captured in memory from
+`supabase db dump --linked --schema public --dry-run`. Pass the parsed URL only
+to the probe process; do not print it, paste it into this repository, or save it
+to a shell file. The probe accepts that command's `cli_login_postgres` identity
+only on this project's exact direct database host with the existing TLS checks.
+
 For a protected Vercel preview, also set either or both linked checkout paths;
 the script then uses `vercel curl` for that target so preview protection remains
 enabled. The temporary curl configuration is mode `0600` and is deleted by the

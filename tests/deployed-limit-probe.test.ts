@@ -98,14 +98,20 @@ test('deployed probe hard-binds every credential-bearing HTTP origin', () => {
 
 test('database URLs are bound to the deployed Supabase project', () => {
   const direct = `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
+  const shortLivedDirect = `postgresql://cli_login_postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
   const pooler = `postgres://postgres.${SUPABASE_PROJECT_REF}:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full`;
   assert.equal(validateDatabaseUrl(direct), direct);
+  assert.equal(validateDatabaseUrl(shortLivedDirect), shortLivedDirect);
   assert.equal(validateDatabaseUrl(pooler), pooler);
 
   for (const value of [
     'postgresql://postgres:secret@db.other-project.supabase.co:5432/postgres',
     'postgresql://postgres:secret@attacker.example:5432/postgres',
     'postgresql://postgres.other-project:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres',
+    `postgresql://cli_login_postgres:secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require`,
+    `postgresql://cli_login_postgres.other:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`,
+    `postgresql://cli_login_postgres:secret@db.other-project.supabase.co:5432/postgres?sslmode=require`,
+    `postgresql://cli_login_postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres`,
     `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres`,
     `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=require&sslmode=require`,
     `postgresql://postgres:secret@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres?sslmode=disable`,

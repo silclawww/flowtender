@@ -160,7 +160,7 @@ export function validateDatabaseUrl(value) {
   const protocolOk = url.protocol === 'postgres:' || url.protocol === 'postgresql:';
   const username = decodeURIComponent(url.username);
   const direct = url.hostname === `db.${SUPABASE_PROJECT_REF}.supabase.co`
-    && username === 'postgres'
+    && (username === 'postgres' || username === 'cli_login_postgres')
     && (!url.port || url.port === '5432');
   const pooler = /^(?:aws-\d+-)?[a-z0-9-]+\.pooler\.supabase\.com$/.test(url.hostname)
     && username === `postgres.${SUPABASE_PROJECT_REF}`
