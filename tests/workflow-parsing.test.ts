@@ -1008,6 +1008,39 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
     assert.equal(result[0][0].json.strategic_fit_score, score);
     assert.equal(result[0][0].json.bid_recommendation, 'recommend_no_bid');
   }
+
+  const incompleteCoverageVariants: unknown[] = [
+    { ...completeRequirementsCoverage(), source_insufficient: true },
+    {
+      ...completeRequirementsCoverage(),
+      source_truncated: true,
+      source_char_count: 12_001,
+      extracted_char_count: 12_000,
+    },
+    { source_insufficient: true },
+    undefined,
+  ];
+  for (const coverage of incompleteCoverageVariants) {
+    const tender: Record<string, unknown> = {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+    };
+    if (coverage !== undefined) tender.requirements_coverage = coverage;
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: tender }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]);
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse({
+        ...blockingEvaluation,
+        strategic_fit_score: 60,
+        bid_recommendation: 'recommend_no_bid',
+      }) }],
+      context,
+    );
+    assert.equal(result[0][0].json.bid_recommendation, 'recommend_no_bid');
+  }
 });
 
 test('stage 3 rejects score and recommendation contradictions', async () => {
