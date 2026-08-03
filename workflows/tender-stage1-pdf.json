@@ -16,7 +16,7 @@
       "type": "code",
       "name": "Extract PDF Text",
       "config": {
-        "code": "const pdfParse = require('pdf-parse');\nconst buf = Buffer.from($json.file_data, 'base64');\nconst data = await pdfParse(buf);\nreturn [{ json: { ...$json, pdf_text: data.text, page_count: data.numpages, text_for_metadata: data.text.substring(0, 6000), file_data: undefined } }];"
+        "code": "const { PDFParse } = require('pdf-parse');\nconst buf = Buffer.from($json.file_data, 'base64');\nconst parser = new PDFParse({ data: buf });\nlet data;\ntry {\n  data = await parser.getText();\n} finally {\n  await parser.destroy();\n}\nreturn [{ json: { ...$json, pdf_text: data.text, page_count: data.total, text_for_metadata: data.text.substring(0, 6000), file_data: undefined } }];"
       }
     },
     {

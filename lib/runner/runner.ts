@@ -141,14 +141,19 @@ export class WorkflowRunner {
       const workflowPayload = materialized.payload;
       const tender_id = preflight.trustedContext?.tender_id
         ?? (workflowPayload.tender_id as string | undefined);
+      const isStageOneUpload = preflight.trustedContext?.operation === 'upload';
 
-      // Create execution record
+      // Stage 1 creates the tender inside the workflow, so its telemetry row
+      // cannot satisfy the immediate tender foreign key yet. Link the same
+      // redacted execution row only after the workflow (including its tender
+      // upsert) has completed successfully. Existing-tender stages keep their
+      // link from the start.
       await persistExactlyOneTelemetryRow(() => this.supabase
       .from('flow_executions')
       .insert(createExecutionTelemetry({
         executionId,
         workflowId: resolvedWorkflowId,
-        tenderId: tender_id,
+        tenderId: isStageOneUpload ? null : tender_id,
         correlationId,
         startedAt: new Date().toISOString(),
       }) as any)
@@ -290,17 +295,23 @@ export class WorkflowRunner {
     }
 
     const duration = Date.now() - startTime;
+    const completion = {
+      ...completeExecutionTelemetry({
+        status: executionErrorCode ? 'error' : 'done',
+        safeErrorCode: executionErrorCode ?? null,
+        completedAt: new Date().toISOString(),
+        durationMs: duration,
+      }),
+      ...(isStageOneUpload && !executionErrorCode && tender_id
+        ? { tender_id }
+        : {}),
+    };
 
     // Update execution record
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await persistExactlyOneTelemetryRow(() => (this.supabase
       .from('flow_executions') as any)
-      .update(completeExecutionTelemetry({
-        status: executionErrorCode ? 'error' : 'done',
-        safeErrorCode: executionErrorCode ?? null,
-        completedAt: new Date().toISOString(),
-        durationMs: duration,
-      }))
+      .update(completion)
       .eq('id', executionId)
       .select('id'));
 
