@@ -125,7 +125,7 @@ test('runner does not multiply the HTTP executor persistent-429 retry budget', a
       const runner = new WorkflowRunner(database.client as never, () => httpWorkflow({
         method: 'POST',
         url: 'https://provider.invalid/v1/chat',
-        timeout_ms: 25,
+        timeout_ms: 1_000,
       }));
       const result = await runStage3(runner, 1_000);
       assert.equal(result.status, 'error');

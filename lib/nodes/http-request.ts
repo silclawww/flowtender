@@ -84,11 +84,13 @@ export const httpRequestExecutor: NodeExecutor = {
     const workflowDeadline = runtime?.deadline ?? Number.POSITIVE_INFINITY;
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const workflowTimeRemaining = workflowDeadline - Date.now();
+      const attemptStartedAt = Date.now();
+      const workflowTimeRemaining = workflowDeadline - attemptStartedAt;
       if (workflowTimeRemaining <= 0) throw new WorkflowDeadlineError();
       const timeoutMs = Math.min(configuredTimeoutMs, workflowTimeRemaining);
+      const timeoutIsWorkflowDeadline = configuredTimeoutMs >= workflowTimeRemaining;
       const controller = new AbortController();
-      const attemptDeadline = Date.now() + timeoutMs;
+      const attemptDeadline = attemptStartedAt + timeoutMs;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const resp = await fetch(url, { method, headers, body, signal: controller.signal });
@@ -138,6 +140,9 @@ export const httpRequestExecutor: NodeExecutor = {
         if (isNonRetryableError(err)) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
         if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
+        if (lastError.name === 'AbortError' && timeoutIsWorkflowDeadline) {
+          throw new WorkflowDeadlineError();
+        }
         if (lastError.name === 'AbortError' || Date.now() >= attemptDeadline) {
           throw requestTimeout(timeoutMs);
         }
