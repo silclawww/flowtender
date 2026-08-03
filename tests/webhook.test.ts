@@ -161,6 +161,37 @@ test('missing or unclaimable admission state prevents workflow execution safely'
   assert.deepEqual(await response.json(), { error_code: 'ADMISSION_UNAVAILABLE' });
 });
 
+test('service-authorised retries pass one validated immutable root to the runner', async () => {
+  const root = '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb';
+  let options: unknown;
+  const request = webhookRequest(SERVICE_KEY);
+  const retryRequest = new Request(request, {
+    headers: { ...Object.fromEntries(request.headers), 'X-Retry-Root-Execution-Id': root.toUpperCase() },
+  });
+  const response = await handleWebhookRequest(retryRequest, 'tender-details', async (_id, _payload, value) => {
+    options = value;
+    return { execution_id: root, status: 'done', duration_ms: 1 };
+  }, SERVICE_KEY, OPERATOR_KEY);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(options, { synchronous: true, retryRootExecutionId: root });
+});
+
+test('malformed retry roots fail before runner work', async () => {
+  let calls = 0;
+  const request = webhookRequest(SERVICE_KEY);
+  const retryRequest = new Request(request, {
+    headers: { ...Object.fromEntries(request.headers), 'X-Retry-Root-Execution-Id': 'customer-content' },
+  });
+  const response = await handleWebhookRequest(retryRequest, 'tender-details', async () => {
+    calls += 1;
+    throw new Error('must not run');
+  }, SERVICE_KEY, OPERATOR_KEY);
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+  assert.deepEqual(await response.json(), { error_code: 'INVALID_RETRY_CONTEXT' });
+});
+
 test('invalid Stage 1/2 envelopes return one redacted admission error', async () => {
   for (const path of ['tender-metadata', 'tender-details']) {
     const request = new Request(`https://flowtender.example/api/flow/webhook/${path}`, {
