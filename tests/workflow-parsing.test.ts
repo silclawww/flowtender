@@ -8,7 +8,7 @@ import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 interface WorkflowCodeNode {
   id: string;
   type: string;
-  config: { body?: string; code?: string };
+  config: { body?: string; code?: string; select?: string };
 }
 
 function workflowNode(file: string, nodeId: string): WorkflowCodeNode {
@@ -260,6 +260,67 @@ const validRequirement = {
   source_fragments: ['Nachweis eines gültigen Qualitätsmanagementsystems nach ISO 9001.'],
 };
 
+const completeRequirementsCoverage = (requirementCount = 2) => ({
+  source_truncated: false,
+  source_char_count: 5_000,
+  extracted_char_count: 5_000,
+  source_char_limit: 12_000,
+  requirement_count: requirementCount,
+  requirement_limit: 25,
+  requirement_limit_reached: false,
+});
+
+async function parseStage2Requirements(sourceText: string, requirementCount: number) {
+  const preparedResult = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-extraction-text') },
+    [{ json: {} }],
+    new Map([['load-tender', [{ json: { pdf_text: sourceText } }]]]),
+  );
+  const prepared = preparedResult[0][0];
+  const requirements = Array.from({ length: requirementCount }, (_, index) => ({
+    ...validRequirement,
+    id: `REQ-${String(index + 1).padStart(3, '0')}`,
+  }));
+  const parsedResult = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse(requirements) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+  return { prepared: prepared.json, parsed: parsedResult[0][0].json, requirements };
+}
+
+test('stage 2 records complete source and below-limit requirement coverage', async () => {
+  const sourceText = 'Vollständiger Ausschreibungstext';
+  const { prepared, parsed, requirements } = await parseStage2Requirements(sourceText, 2);
+
+  assert.equal(prepared.extraction_text, sourceText);
+  assert.deepEqual(parsed, {
+    requirements,
+    requirements_coverage: {
+      source_truncated: false,
+      source_char_count: sourceText.length,
+      extracted_char_count: sourceText.length,
+      source_char_limit: 12_000,
+      requirement_count: 2,
+      requirement_limit: 25,
+      requirement_limit_reached: false,
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(parsed.requirements_coverage), /Ausschreibungstext/);
+});
+
+test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
+  const truncated = await parseStage2Requirements('x'.repeat(12_001), 1);
+  assert.equal((truncated.prepared.extraction_text as string).length, 12_000);
+  assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
+  assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
+
+  const saturated = await parseStage2Requirements('kurzer Quelltext', 25);
+  assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, false);
+  assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).requirement_count, 25);
+  assert.equal((saturated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, true);
+});
+
 test('stage 2 rejects malformed requirement schemas', async () => {
   const invalidRequirements: unknown[] = [
     { requirements: [validRequirement] },
@@ -294,10 +355,20 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
   const result = await codeExecutor.execute(
     { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
     [{ json: llmResponse(requirements) }],
-    new Map(),
+    new Map([['prepare-extraction-text', [{ json: {
+      requirements_coverage: {
+        source_truncated: false,
+        source_char_count: 5_000,
+        extracted_char_count: 5_000,
+        source_char_limit: 12_000,
+      },
+    } }]]]),
   );
 
-  assert.deepEqual(result, [[{ json: { requirements } }]]);
+  assert.deepEqual(result, [[{ json: {
+    requirements,
+    requirements_coverage: completeRequirementsCoverage(),
+  } }]]);
 });
 
 test('stage 2 fails closed when workload classification JSON is invalid', async () => {
@@ -513,10 +584,69 @@ function stage3Context(): ExecutionContext {
     ['load-requirements', [{ json: {
       id: 'tender-id',
       requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements_coverage: completeRequirementsCoverage(),
     } }]],
     ['geocode-distance', [{ json: { distance_km: 47.5, distance_note: '47,5 km zum Bauort' } }]],
   ]);
 }
+
+test('stage 3 explicitly selects coverage with the requirement inputs', () => {
+  const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
+  assert.ok(select?.split(',').map((column) => column.trim()).includes('requirements_coverage'));
+});
+
+test('stage 3 preserves recommendations only for complete valid coverage', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(validEvaluation) }],
+    stage3Context(),
+  );
+
+  assert.equal(result[0][0].json.bid_recommendation, 'recommend_bid');
+});
+
+test('stage 3 forces review for truncated, saturated, missing, or malformed coverage', async () => {
+  const coverageVariants: unknown[] = [
+    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
+    { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
+    undefined,
+    { source_truncated: false, requirement_limit_reached: false },
+  ];
+
+  for (const coverage of coverageVariants) {
+    const tender: Record<string, unknown> = {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+    };
+    if (coverage !== undefined) tender.requirements_coverage = coverage;
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: tender }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]);
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(validEvaluation) }],
+      context,
+    );
+    assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+  }
+});
+
+test('stage 3 rejects contradictory raw recommendations before applying a coverage override', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements_coverage: { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
+    } }]],
+  ]);
+  await assertLlmResponseFailsSafely(
+    'tender-stage3-evaluation.json',
+    'parse-evaluation',
+    llmResponse({ ...validEvaluation, strategic_fit_score: 70, bid_recommendation: 'needs_review' }),
+    context,
+  );
+});
 
 test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates', async () => {
   const matchingDuplicateSummary = {
@@ -585,8 +715,8 @@ test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates',
 
 test('stage 3 rejects fabricated eligibility IDs when source requirements are empty or missing', async () => {
   const tenders = [
-    { id: 'tender-id', requirements: [] },
-    { id: 'tender-id' },
+    { id: 'tender-id', requirements: [], requirements_coverage: completeRequirementsCoverage(0) },
+    { id: 'tender-id', requirements_coverage: completeRequirementsCoverage(0) },
   ];
 
   for (const tender of tenders) {
@@ -635,7 +765,11 @@ test('stage 3 marks an empty requirement extraction for manual review', async ()
     eligibility_requirements: [],
   };
   const context: ExecutionContext = new Map([
-    ['load-requirements', [{ json: { id: 'tender-id', requirements: [] } }]],
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [],
+      requirements_coverage: completeRequirementsCoverage(0),
+    } }]],
     ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
   ]);
 
@@ -654,10 +788,15 @@ test('stage 3 rejects an unqualified recommendation when critical eligibility is
     ['load-requirements', [{ json: {
       id: 'tender-id',
       requirements: [{ id: 'REQ-001', is_critical: true }, { id: 'REQ-002', is_critical: false }],
+      requirements_coverage: completeRequirementsCoverage(),
     } }]],
   ]);
   const emptyContext: ExecutionContext = new Map([
-    ['load-requirements', [{ json: { id: 'tender-id', requirements: [] } }]],
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [],
+      requirements_coverage: completeRequirementsCoverage(0),
+    } }]],
   ]);
   const emptyRecommendation = {
     ...validEvaluation,

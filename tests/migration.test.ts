@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const migrationPath = new URL('../supabase/migrations/002_secure_redacted_telemetry.sql', import.meta.url);
 const schemaRepairMigrationPath = new URL('../supabase/migrations/004_repair_flowtender_schema.sql', import.meta.url);
+const requirementsCoverageMigrationPath = new URL('../supabase/migrations/020_requirements_coverage.sql', import.meta.url);
 const readmePath = new URL('../README.md', import.meta.url);
 const dbTestPath = new URL('../scripts/test-migration-db.sh', import.meta.url);
 const dbAssertionsPath = new URL('./sql/migration-db-assertions.sql', import.meta.url);
@@ -48,6 +49,14 @@ test('schema hardening is safe to retry and enforces one node row per execution 
   assert.match(sql, /FROM pg_constraint/);
   assert.match(sql, /flow_node_runs_execution_stage_key/);
   assert.match(sql, /UNIQUE \(execution_id, stage\)/);
+});
+
+test('requirements coverage migration adds a nullable retry-safe jsonb column', () => {
+  const sql = readFileSync(requirementsCoverageMigrationPath, 'utf8');
+
+  assert.match(sql, /ALTER TABLE public\.tenders/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS requirements_coverage jsonb/);
+  assert.doesNotMatch(sql, /NOT NULL|DEFAULT/i);
 });
 
 test('migration defines automatic seven-day TTL and an explicit confirmed purge', () => {
