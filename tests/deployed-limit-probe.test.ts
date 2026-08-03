@@ -157,6 +157,15 @@ test('database URL becomes a controlled libpq environment with no ambient connec
     PGDATABASE: 'ambient-database',
     PGSSLMODE: 'disable',
     PGOPTIONS: '-c role=ambient',
+    PGSERVICE: 'ambient-service',
+    PGSERVICEFILE: '/ambient/service.conf',
+    PGPASSFILE: '/ambient/passfile',
+    PGSSLROOTCERT: '/ambient/root.crt',
+    PGSSLCERT: '/ambient/client.crt',
+    PGSSLKEY: '/ambient/client.key',
+    PGCHANNELBINDING: 'disable',
+    PGTARGETSESSIONATTRS: 'read-write',
+    PGFOO: 'ambient-extension',
   };
   const cliDirect = `postgresql://cli_login_postgres:s%40cr%3Aet@db.${SUPABASE_PROJECT_REF}.supabase.co/postgres?sslmode=require`;
   const directEnvironment = buildDatabaseProcessEnvironment(cliDirect, {
