@@ -12,6 +12,7 @@ import {
   buildExactJson,
   buildExactCleanupSql,
   buildExactPdf,
+  buildVercelCurlPlan,
   FLOW_JSON_MAX_BYTES,
   RAW_PDF_MAX_BYTES,
   SUPABASE_PROJECT_REF,
@@ -132,6 +133,39 @@ test('Vercel CLI directories must be linked to the exact team and project', asyn
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Vercel CLI 54 receives curl-first args, a real cwd, and HTTP/1.1 config', () => {
+  const plan = buildVercelCurlPlan(
+    'https://flowtender.vercel.app',
+    '/api/flow/webhook/p04-limit-token',
+    {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-key' },
+      body: Buffer.from('{}'),
+    },
+    60_000,
+    '/linked/flowtender',
+    {
+      bodyPath: '/tmp/request.body',
+      configPath: '/tmp/request.curlrc',
+      responsePath: '/tmp/request.response',
+    },
+  );
+
+  assert.deepEqual(plan.args, [
+    'curl',
+    '/api/flow/webhook/p04-limit-token',
+    '--deployment',
+    'https://flowtender.vercel.app',
+    '--',
+    '--config',
+    '/tmp/request.curlrc',
+  ]);
+  assert.equal(plan.cwd, '/linked/flowtender');
+  assert.match(plan.curlConfig, /^http1\.1$/m);
+  assert.match(plan.curlConfig, /^data-binary = "@\/tmp\/request\.body"$/m);
+  assert.doesNotMatch(plan.args.join(' '), /--cwd|--no-color|--non-interactive/);
 });
 
 test('cleanup SQL deletes only captured IDs and the composite node identity', () => {

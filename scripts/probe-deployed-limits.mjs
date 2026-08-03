@@ -267,6 +267,29 @@ function curlQuote(value) {
   return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
+export function buildVercelCurlPlan(origin, path, options, timeoutMs, cwd, files) {
+  const { bodyPath, configPath, responsePath } = files;
+  return {
+    args: ['curl', path, '--deployment', origin, '--', '--config', configPath],
+    cwd,
+    curlConfig: [
+      'silent',
+      'show-error',
+      'http1.1',
+      `request = ${curlQuote(options.method)}`,
+      `connect-timeout = ${curlQuote('20')}`,
+      `max-time = ${curlQuote(String(Math.ceil(timeoutMs / 1000)))}`,
+      `output = ${curlQuote(responsePath)}`,
+      `write-out = ${curlQuote('P04_STATUS:%{http_code}')}`,
+      ...Object.entries(options.headers).map(([name, value]) => (
+        `header = ${curlQuote(`${name}: ${value}`)}`
+      )),
+      ...(options.body ? [`data-binary = ${curlQuote(`@${bodyPath}`)}`] : []),
+      '',
+    ].join('\n'),
+  };
+}
+
 let requestSequence = 0;
 async function vercelRequest(origin, path, options, timeoutMs, failureCode, cwd, tempDirectory) {
   requestSequence += 1;
@@ -276,32 +299,20 @@ async function vercelRequest(origin, path, options, timeoutMs, failureCode, cwd,
   const configPath = join(tempDirectory, `${stem}.curlrc`);
   if (options.body) await writeFile(bodyPath, options.body, { flag: 'wx', mode: 0o600 });
 
-  const curlConfig = [
-    'silent',
-    'show-error',
-    `request = ${curlQuote(options.method)}`,
-    `connect-timeout = ${curlQuote('20')}`,
-    `max-time = ${curlQuote(String(Math.ceil(timeoutMs / 1000)))}`,
-    `output = ${curlQuote(responsePath)}`,
-    `write-out = ${curlQuote('P04_STATUS:%{http_code}')}`,
-    ...Object.entries(options.headers).map(([name, value]) => (
-      `header = ${curlQuote(`${name}: ${value}`)}`
-    )),
-    ...(options.body ? [`data-binary = ${curlQuote(`@${bodyPath}`)}`] : []),
-    '',
-  ].join('\n');
-  await writeFile(configPath, curlConfig, { flag: 'wx', mode: 0o600 });
+  const plan = buildVercelCurlPlan(origin, path, options, timeoutMs, cwd, {
+    bodyPath, configPath, responsePath,
+  });
+  await writeFile(configPath, plan.curlConfig, { flag: 'wx', mode: 0o600 });
 
-  const result = spawnSync('vercel', [
-    '--cwd', cwd,
-    '--no-color',
-    '--non-interactive',
-    'curl', path,
-    '--deployment', origin,
-    '--', '--config', configPath,
-  ], {
+  const result = spawnSync('vercel', plan.args, {
+    cwd: plan.cwd,
     encoding: 'utf8',
-    env: process.env,
+    env: {
+      ...process.env,
+      CI: '1',
+      NO_COLOR: '1',
+      VERCEL_TELEMETRY_DISABLED: '1',
+    },
     timeout: timeoutMs + 10_000,
     maxBuffer: RESPONSE_MAX_BYTES,
   });
