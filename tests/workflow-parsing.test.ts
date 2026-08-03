@@ -8,16 +8,22 @@ import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 interface WorkflowCodeNode {
   id: string;
   type: string;
-  config: { code?: string };
+  config: { body?: string; code?: string };
 }
 
-function workflowCode(file: string, nodeId: string): string {
+function workflowNode(file: string, nodeId: string): WorkflowCodeNode {
   const workflow = JSON.parse(readFileSync(new URL(`../workflows/${file}`, import.meta.url), 'utf8')) as {
     nodes: WorkflowCodeNode[];
   };
   const node = workflow.nodes.find((candidate) => candidate.id === nodeId);
-  assert.ok(node?.config.code, `missing code node ${nodeId}`);
-  return node.config.code;
+  assert.ok(node, `missing workflow node ${nodeId}`);
+  return node;
+}
+
+function workflowCode(file: string, nodeId: string): string {
+  const code = workflowNode(file, nodeId).config.code;
+  assert.ok(code, `missing code node ${nodeId}`);
+  return code;
 }
 
 async function assertInvalidJsonFailsSafely(
@@ -266,10 +272,19 @@ const workloadPositions = [
   { id: 'position-2', short_text: 'Fertigteile liefern und montieren', unit: 'St' },
 ];
 
+const workloadClassificationKey = (index: number) => `POS-${String(index + 1).padStart(3, '0')}`;
+
 const validWorkload = [
-  { id: 'position-1', type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
-  { id: 'position-2', type: 'gemischt', reason: 'Lieferung und Einbau' },
+  { id: workloadClassificationKey(0), type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
+  { id: workloadClassificationKey(1), type: 'gemischt', reason: 'Lieferung und Einbau' },
 ];
+
+test('stage 2 uses the same bounded index classification keys in the request and parser', () => {
+  const keyGenerator = "const classificationKey = (index) => 'POS-' + String(index + 1).padStart(3, '0');";
+  assert.ok(workflowNode('tender-stage2-requirements.json', 'classify-workload').config.body?.includes(keyGenerator));
+  assert.ok(workflowCode('tender-stage2-requirements.json', 'parse-workload').includes(keyGenerator));
+  assert.equal(workloadClassificationKey(119), 'POS-120');
+});
 
 test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload classifications', async () => {
   const context: ExecutionContext = new Map([
@@ -315,9 +330,93 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
       { ...workloadPositions[0], type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
       { ...workloadPositions[1], type: 'gemischt', reason: 'Lieferung und Einbau' },
     ],
+    source_total: 2,
+    classified_total: 2,
+    unclassified_total: 0,
+    mode: 'complete',
     classified_at: (output.value_breakdown as { classified_at: string }).classified_at,
   });
   assert.match((output.value_breakdown as { classified_at: string }).classified_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('stage 2 records complete and first-120-sample coverage at the paid-work boundary', async () => {
+  for (const sourceTotal of [120, 121]) {
+    const positions = Array.from({ length: sourceTotal }, (_, index) => ({
+      id: `lot-position-${index + 1}`,
+      short_text: `Position ${index + 1}`,
+      unit: 'St',
+    }));
+    const classifications = positions.slice(0, 120).map((_, index) => ({
+      id: workloadClassificationKey(index),
+      type: 'eigen',
+      reason: 'Typische Eigenleistung',
+    }));
+    const context: ExecutionContext = new Map([
+      ['load-tender', [{ json: { gaeb_positions: positions } }]],
+    ]);
+
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+      [{ json: llmResponse(classifications) }],
+      context,
+    );
+    const breakdown = result[0][0].json.value_breakdown as {
+      summary: { eigen: number; total: number };
+      positions: unknown[];
+      source_total: number;
+      classified_total: number;
+      unclassified_total: number;
+      mode: string;
+    };
+
+    assert.deepEqual({
+      source_total: breakdown.source_total,
+      classified_total: breakdown.classified_total,
+      unclassified_total: breakdown.unclassified_total,
+      mode: breakdown.mode,
+      summary_total: breakdown.summary.total,
+      eigen_count: breakdown.summary.eigen,
+      saved_positions: breakdown.positions.length,
+    }, {
+      source_total: sourceTotal,
+      classified_total: 120,
+      unclassified_total: sourceTotal - 120,
+      mode: sourceTotal === 120 ? 'complete' : 'first_120_sample',
+      summary_total: 120,
+      eigen_count: 120,
+      saved_positions: 120,
+    });
+  }
+});
+
+test('stage 2 classifies duplicate file-local position IDs independently and saves original IDs', async () => {
+  const positions = [
+    { id: '01.001', short_text: 'Los 1 Baustelle einrichten', unit: 'psch' },
+    { id: '01.001', short_text: 'Los 2 Spezialleistung', unit: 'psch' },
+  ];
+  const classifications = [
+    { id: workloadClassificationKey(0), type: 'eigen', reason: 'Baustelleneinrichtung' },
+    { id: workloadClassificationKey(1), type: 'fremd', reason: 'Spezialisierte Fremdleistung' },
+  ];
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: positions } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: llmResponse(classifications) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    summary: Record<string, number>;
+    positions: Record<string, unknown>[];
+  };
+
+  assert.deepEqual(breakdown.summary, { eigen: 1, fremd: 1, liefer: 0, gemischt: 0, total: 2 });
+  assert.deepEqual(breakdown.positions, [
+    { ...positions[0], type: 'eigen', reason: 'Baustelleneinrichtung' },
+    { ...positions[1], type: 'fremd', reason: 'Spezialisierte Fremdleistung' },
+  ]);
 });
 
 test('stage 2 preserves the no-GAEB workload early exit without parsing the LLM response', async () => {
@@ -461,6 +560,26 @@ test('stage 3 rejects fabricated eligibility IDs when source requirements are em
       context,
     );
   }
+});
+
+test('stage 3 rejects an otherwise valid evaluation that omits a known requirement ID', async () => {
+  const incompleteEvaluation = {
+    ...validEvaluation,
+    eligibility_summary: {
+      compliant_count: 1,
+      partial_count: 0,
+      not_met_count: 0,
+      blocking_issues: 0,
+    },
+    eligibility_requirements: [validEvaluation.eligibility_requirements[0]],
+  };
+
+  await assertLlmResponseFailsSafely(
+    'tender-stage3-evaluation.json',
+    'parse-evaluation',
+    llmResponse(incompleteEvaluation),
+    stage3Context(),
+  );
 });
 
 test('stage 3 normalizes nested JSON strings and preserves a valid evaluation with distance fields', async () => {
