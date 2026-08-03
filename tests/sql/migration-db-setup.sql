@@ -2,6 +2,8 @@
 DROP TABLE IF EXISTS public.flow_telemetry_purge_log CASCADE;
 DROP TABLE IF EXISTS public.flow_node_runs CASCADE;
 DROP TABLE IF EXISTS public.flow_executions CASCADE;
+DROP TABLE IF EXISTS public.pipeline_admissions CASCADE;
+DROP TABLE IF EXISTS public.org_members CASCADE;
 
 DO $$
 BEGIN
@@ -21,3 +23,14 @@ CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE TABLE IF NOT EXISTS public.tenders (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid()
 );
+CREATE TABLE public.org_members (
+  user_id UUID NOT NULL,
+  org_id UUID NOT NULL,
+  PRIMARY KEY (user_id, org_id)
+);
+INSERT INTO public.org_members (user_id, org_id) VALUES
+  ('aaaaaaaa-0000-4000-8000-000000000001', 'bbbbbbbb-0000-4000-8000-000000000001'),
+  ('aaaaaaaa-0000-4000-8000-000000000002', 'bbbbbbbb-0000-4000-8000-000000000001'),
+  ('aaaaaaaa-0000-4000-8000-000000000003', 'bbbbbbbb-0000-4000-8000-000000000002'),
+  ('aaaaaaaa-0000-4000-8000-000000000004', 'bbbbbbbb-0000-4000-8000-000000000001'),
+  ('aaaaaaaa-0000-4000-8000-000000000005', 'bbbbbbbb-0000-4000-8000-000000000002');

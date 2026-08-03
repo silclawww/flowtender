@@ -9,6 +9,7 @@ import {
 
 const OPERATOR_KEY = 'operator-secret-with-enough-entropy';
 const SERVICE_KEY = 'service-secret-with-enough-entropy';
+const SERVICE_ROLE_KEY = 'supabase-service-role-secret-with-enough-entropy';
 
 function bearer(token: string): Headers {
   return new Headers({ authorization: `Bearer ${token}` });
@@ -39,6 +40,11 @@ test('service authorization is Bearer-only and fails closed', () => {
   assert.equal(isServiceAuthorized(bearer(SERVICE_KEY), SERVICE_KEY), true);
   assert.equal(isServiceAuthorized(basic('operator', SERVICE_KEY), SERVICE_KEY), false);
   assert.equal(isServiceAuthorized(bearer(SERVICE_KEY), undefined), false);
+  assert.equal(isServiceAuthorized(new Headers({ authorization: 'Bearer' }), SERVICE_KEY), false);
+  assert.equal(isServiceAuthorized(new Headers({ authorization: 'Bearer first second' }), SERVICE_KEY), false);
+  assert.equal(isServiceAuthorized(bearer(''), SERVICE_KEY), false);
+  assert.equal(isServiceAuthorized(bearer('wrong'), SERVICE_KEY), false);
+  assert.equal(isServiceAuthorized(bearer(SERVICE_ROLE_KEY), SERVICE_KEY), false);
 });
 
 test('operator and service credentials are not interchangeable', () => {

@@ -146,6 +146,17 @@ assertions with `npm run test:migration-db`; the script refuses non-local databa
 and requires `FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES` confirmation alongside
 `FLOWTENDER_TEST_DATABASE_URL`.
 
+### Pipeline admission limits
+
+Migration `003_pipeline_admission.sql` provides the atomic per-user,
+per-organisation, and retry-root admission gate shared by Tenderly and Flowtender.
+Use [`docs/pipeline-admission-rollout.md`](./docs/pipeline-admission-rollout.md) for
+the limit definitions, retention boundary, deployment order, and production smoke
+checks. Do not deploy the two application changes independently outside that
+maintenance procedure. `npm run test:migration-db` also runs the retry ceiling
+through four independent PostgreSQL sessions and proves the actor/organisation
+binding for retry roots.
+
 ### Production
 
 ```bash
@@ -185,6 +196,12 @@ Content-Type: application/json
   "file_url": "https://..."
 }
 ```
+
+Webhook and direct-trigger JSON ingress is capped at 75 MiB from both the
+declared `Content-Length` and bytes counted while streaming. This ceiling covers
+the current 50 MiB source-file contract after base64 expansion and JSON
+overhead. Requests that cross it stop before JSON parsing, admission claims,
+telemetry, workflow loading, or paid provider work.
 
 The only unauthenticated operational endpoint is:
 

@@ -19,7 +19,11 @@ import {
   normalizeCorrelationId,
   type SafeErrorCode,
 } from '../telemetry.ts';
-import { preflightWorkflowPayload } from '../tenant-context.ts';
+import {
+  materializeWorkflowPayload,
+  preflightWorkflowPayload,
+} from '../tenant-context.ts';
+import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -71,6 +75,7 @@ export interface RunOptions {
   synchronous?: boolean;  // If true, wait for 'respond' node before returning
   timeoutMs?: number;     // Max execution time (default: 120000ms)
   correlationId?: string; // Opaque request identifier; unsafe values are discarded
+  retryRootExecutionId?: string; // Immutable root used for retry-cost accounting
 }
 
 export interface ExecutionResult {
@@ -103,24 +108,46 @@ export class WorkflowRunner {
     options: RunOptions = {}
   ): Promise<ExecutionResult> {
     const preflight = preflightWorkflowPayload(workflowId, triggerPayload);
-    const workflowPayload = preflight.payload;
 
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = normalizeCorrelationId(options.correlationId, executionId);
+    const correlationId = preflight.trustedContext
+      ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
+      : normalizeCorrelationId(options.correlationId, executionId);
 
-    // Detect tender_id in payload
-    const tender_id = preflight.tenantContext?.tender_id
-      ?? (workflowPayload.tender_id as string | undefined)
-      ?? ((workflowPayload.body as Record<string,unknown>)?.tender_id as string | undefined);
+    let receiverOwnedLease: string | null = null;
+    if (preflight.trustedContext) {
+      await claimPipelineAdmission(this.supabase, {
+        leaseId: preflight.trustedContext.admission_id,
+        actorUserId: preflight.trustedContext.user_id,
+        orgId: preflight.trustedContext.org_id,
+        operation: options.retryRootExecutionId
+          ? 'retry'
+          : preflight.trustedContext.operation,
+        rootExecutionId: correlationId,
+      });
+      if (preflight.trustedContext.operation !== 'upload') {
+        receiverOwnedLease = preflight.trustedContext.admission_id;
+      }
+    }
 
-    // Create execution record
-    await persistExactlyOneTelemetryRow(() => this.supabase
+    try {
+      // Business payload traversal is deliberately deferred until the durable
+      // admission has been claimed. This prevents rejected/replayed requests
+      // from consuming clone, telemetry, parser, or LLM work.
+      const materialized = materializeWorkflowPayload(workflowId, preflight);
+      const resolvedWorkflowId = materialized.workflowId;
+      const workflowPayload = materialized.payload;
+      const tender_id = preflight.trustedContext?.tender_id
+        ?? (workflowPayload.tender_id as string | undefined);
+
+      // Create execution record
+      await persistExactlyOneTelemetryRow(() => this.supabase
       .from('flow_executions')
       .insert(createExecutionTelemetry({
         executionId,
-        workflowId,
+        workflowId: resolvedWorkflowId,
         tenderId: tender_id,
         correlationId,
         startedAt: new Date().toISOString(),
@@ -134,7 +161,7 @@ export class WorkflowRunner {
     try {
       let workflow: ReturnType<typeof loadWorkflow>;
       try {
-        workflow = this.workflowLoader(workflowId);
+        workflow = this.workflowLoader(resolvedWorkflowId);
       } catch {
         executionErrorCode = 'WORKFLOW_LOAD_FAILED';
         throw new Error('Workflow load failed');
@@ -279,13 +306,18 @@ export class WorkflowRunner {
 
     if (telemetryFailure) throw telemetryFailure;
 
-    return {
-      execution_id: executionId,
-      status: executionErrorCode ? 'error' : 'done',
-      response_payload: responsePayload,
-      error_code: executionErrorCode,
-      duration_ms: duration,
-    };
+      return {
+        execution_id: executionId,
+        status: executionErrorCode ? 'error' : 'done',
+        response_payload: responsePayload,
+        error_code: executionErrorCode,
+        duration_ms: duration,
+      };
+    } finally {
+      if (receiverOwnedLease) {
+        await releasePipelineAdmission(this.supabase, receiverOwnedLease);
+      }
+    }
   }
 }
 

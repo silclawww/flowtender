@@ -225,3 +225,263 @@ BEGIN
   END IF;
 END;
 $$;
+
+DO $$
+DECLARE
+  v_result RECORD;
+  v_lease_a UUID;
+  v_lease_b UUID;
+  v_root UUID := 'cccccccc-0000-4000-8000-000000000001';
+  v_index INTEGER;
+BEGIN
+  IF has_table_privilege('anon', 'public.pipeline_admissions', 'SELECT, INSERT, UPDATE, DELETE')
+     OR has_table_privilege('authenticated', 'public.pipeline_admissions', 'SELECT, INSERT, UPDATE, DELETE')
+     OR has_table_privilege('service_role', 'public.pipeline_admissions', 'INSERT, UPDATE, DELETE')
+     OR NOT has_table_privilege('service_role', 'public.pipeline_admissions', 'SELECT') THEN
+    RAISE EXCEPTION 'pipeline admission table grants are incorrect';
+  END IF;
+
+  IF has_function_privilege('anon', 'public.acquire_pipeline_admission(uuid,uuid,text,uuid)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.acquire_pipeline_admission(uuid,uuid,text,uuid)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.acquire_pipeline_admission(uuid,uuid,text,uuid)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.claim_pipeline_admission(uuid,uuid,uuid,text,uuid)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.release_pipeline_admission(uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'pipeline admission function grants are incorrect';
+  END IF;
+
+  IF NOT (SELECT relrowsecurity AND relforcerowsecurity
+          FROM pg_class WHERE oid = 'public.pipeline_admissions'::regclass) THEN
+    RAISE EXCEPTION 'pipeline admission forced RLS is missing';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_proc
+    WHERE oid IN (
+      'public.acquire_pipeline_admission(uuid,uuid,text,uuid)'::regprocedure,
+      'public.claim_pipeline_admission(uuid,uuid,uuid,text,uuid)'::regprocedure,
+      'public.release_pipeline_admission(uuid)'::regprocedure,
+      'public.purge_expired_pipeline_admissions()'::regprocedure
+    )
+      AND (NOT prosecdef OR NOT (
+        COALESCE(proconfig, ARRAY[]::TEXT[]) @>
+        ARRAY['search_path=public, pg_temp', 'row_security=off']::TEXT[]
+      ))
+  ) THEN
+    RAISE EXCEPTION 'pipeline admission function security configuration is incorrect';
+  END IF;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'ffffffff-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    NULL
+  );
+  IF v_result.allowed OR v_result.reason <> 'invalid_context' THEN
+    RAISE EXCEPTION 'non-member admission was accepted';
+  END IF;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    NULL
+  );
+  IF NOT v_result.allowed OR v_result.lease_id IS NULL THEN
+    RAISE EXCEPTION 'valid user admission was denied';
+  END IF;
+  v_lease_a := v_result.lease_id;
+
+  IF NOT public.claim_pipeline_admission(
+    v_lease_a,
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    v_root
+  ) OR public.claim_pipeline_admission(
+    v_lease_a,
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    v_root
+  ) THEN
+    RAISE EXCEPTION 'admission claim was not exactly-once';
+  END IF;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage3',
+    NULL
+  );
+  IF v_result.allowed OR v_result.reason <> 'user_concurrency' THEN
+    RAISE EXCEPTION 'per-user concurrency limit was not enforced';
+  END IF;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000002',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    NULL
+  );
+  IF NOT v_result.allowed THEN RAISE EXCEPTION 'second org slot was denied'; END IF;
+  v_lease_b := v_result.lease_id;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000004',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    NULL
+  );
+  IF v_result.allowed OR v_result.reason <> 'org_concurrency' THEN
+    RAISE EXCEPTION 'per-org concurrency limit was not enforced';
+  END IF;
+
+  IF NOT public.release_pipeline_admission(v_lease_a)
+     OR NOT public.release_pipeline_admission(v_lease_b) THEN
+    RAISE EXCEPTION 'leases did not release';
+  END IF;
+
+  DELETE FROM public.pipeline_admissions;
+
+  INSERT INTO public.pipeline_admissions (
+    actor_user_id, org_id, operation, root_execution_id,
+    admitted_at, lease_expires_at, claimed_at, released_at
+  ) VALUES (
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'stage2',
+    v_root,
+    clock_timestamp(),
+    clock_timestamp() + interval '12 minutes',
+    clock_timestamp(),
+    clock_timestamp()
+  );
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000002',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'retry',
+    v_root
+  );
+  IF v_result.allowed OR v_result.reason <> 'retry_context_mismatch' THEN
+    RAISE EXCEPTION 'retry root was accepted for a different actor';
+  END IF;
+
+  FOR v_index IN 1..2 LOOP
+    SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+      'aaaaaaaa-0000-4000-8000-000000000001',
+      'bbbbbbbb-0000-4000-8000-000000000001',
+      'retry',
+      v_root
+    );
+    IF NOT v_result.allowed THEN RAISE EXCEPTION 'retry % was denied', v_index; END IF;
+    IF NOT public.claim_pipeline_admission(
+      v_result.lease_id,
+      'aaaaaaaa-0000-4000-8000-000000000001',
+      'bbbbbbbb-0000-4000-8000-000000000001',
+      'retry',
+      v_root
+    ) THEN RAISE EXCEPTION 'retry claim % failed', v_index; END IF;
+    PERFORM public.release_pipeline_admission(v_result.lease_id);
+  END LOOP;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'bbbbbbbb-0000-4000-8000-000000000001',
+    'retry',
+    v_root
+  );
+  IF v_result.allowed OR v_result.reason <> 'retry_ceiling' THEN
+    RAISE EXCEPTION 'retry ceiling was not enforced across one root';
+  END IF;
+
+  DELETE FROM public.pipeline_admissions;
+
+  -- Seed eleven requests, then use one original upload lease for the complete
+  -- twelfth request (receiver plus supplemental work). A second acquisition
+  -- would become request thirteen and must be denied.
+  FOR v_index IN 1..11 LOOP
+    SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+      'aaaaaaaa-0000-4000-8000-000000000003',
+      'bbbbbbbb-0000-4000-8000-000000000002',
+      'upload',
+      NULL
+    );
+    IF NOT v_result.allowed THEN RAISE EXCEPTION 'user rate seed % was denied', v_index; END IF;
+    PERFORM public.release_pipeline_admission(v_result.lease_id);
+  END LOOP;
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
+    NULL
+  );
+  IF NOT v_result.allowed THEN RAISE EXCEPTION 'twelfth upload was denied'; END IF;
+  v_lease_a := v_result.lease_id;
+  IF NOT public.claim_pipeline_admission(
+    v_lease_a,
+    'aaaaaaaa-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
+    'dddddddd-0000-4000-8000-000000000001'
+  ) THEN
+    RAISE EXCEPTION 'twelfth upload receiver claim failed';
+  END IF;
+  -- Supplemental extraction stays under v_lease_a: deliberately no acquire.
+  PERFORM public.release_pipeline_admission(v_lease_a);
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
+    NULL
+  );
+  IF v_result.allowed OR v_result.reason <> 'user_rate' THEN
+    RAISE EXCEPTION 'per-user hourly rate was not enforced';
+  END IF;
+
+  INSERT INTO public.pipeline_admissions (
+    actor_user_id, org_id, operation, admitted_at, lease_expires_at, released_at
+  )
+  SELECT gen_random_uuid(),
+         'bbbbbbbb-0000-4000-8000-000000000002',
+         'upload',
+         clock_timestamp() - interval '20 minutes',
+         clock_timestamp() - interval '19 minutes',
+         clock_timestamp() - interval '19 minutes'
+  FROM generate_series(1, 40);
+
+  SELECT * INTO v_result FROM public.acquire_pipeline_admission(
+    'aaaaaaaa-0000-4000-8000-000000000005',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'stage2',
+    NULL
+  );
+  IF v_result.allowed OR v_result.reason <> 'org_rate' THEN
+    RAISE EXCEPTION 'per-org hourly rate was not enforced';
+  END IF;
+
+  INSERT INTO public.pipeline_admissions (
+    actor_user_id, org_id, operation, admitted_at, lease_expires_at, released_at
+  ) VALUES (
+    'aaaaaaaa-0000-4000-8000-000000000005',
+    'bbbbbbbb-0000-4000-8000-000000000002',
+    'upload',
+    clock_timestamp() - interval '50 hours',
+    clock_timestamp() - interval '49 hours',
+    clock_timestamp() - interval '49 hours'
+  );
+  IF public.purge_expired_pipeline_admissions() <> 1 THEN
+    RAISE EXCEPTION '48-hour cleanup did not remove exactly the expired row';
+  END IF;
+
+  IF (SELECT count(*) FROM cron.job
+      WHERE jobname = 'flowtender-pipeline-admission-ttl'
+        AND schedule = '41 3 * * *'
+        AND command = 'SELECT public.purge_expired_pipeline_admissions();'
+        AND active) <> 1 THEN
+    RAISE EXCEPTION 'pipeline admission cleanup job is incorrect';
+  END IF;
+END;
+$$;

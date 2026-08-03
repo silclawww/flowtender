@@ -23,6 +23,11 @@ export interface RetryableExecution {
   correlation_id: string | null;
 }
 
+export interface RetryActorContext {
+  actor_user_id: string | null;
+  org_id: string | null;
+}
+
 const RECONSTRUCTABLE_WORKFLOWS = new Set([
   'tender-stage2-requirements',
   'tender-stage3-evaluation',
@@ -53,17 +58,34 @@ export function prepareSafeRetry(execution: RetryableExecution) {
     throw new SafeRetryError('EXECUTION_NOT_RETRYABLE', 'Execution cannot be retried safely');
   }
 
+  if (!execution.correlation_id || !UUID_PATTERN.test(execution.correlation_id)) {
+    throw new SafeRetryError('RETRY_TENANT_CONTEXT_INVALID', 'Retry tenant context is invalid');
+  }
+
   return {
     workflowId: execution.workflow_id,
     tenderId: execution.tender_id,
     correlationId: execution.correlation_id ?? undefined,
+    retryRootExecutionId: execution.correlation_id.toLowerCase(),
   };
 }
 
 /** Build the only retry payload reconstructable from redacted and immutable data. */
-export function buildSafeRetry(execution: RetryableExecution, orgId?: string | null) {
+export function buildSafeRetry(
+  execution: RetryableExecution,
+  orgId?: string | null,
+  actorContext?: RetryActorContext,
+) {
   const prepared = prepareSafeRetry(execution);
   if (!orgId || !UUID_PATTERN.test(orgId)) {
+    throw new SafeRetryError(
+      'RETRY_TENANT_CONTEXT_INVALID',
+      'Retry tenant context is invalid',
+    );
+  }
+  if (!actorContext?.actor_user_id || !UUID_PATTERN.test(actorContext.actor_user_id)
+    || !actorContext.org_id || !UUID_PATTERN.test(actorContext.org_id)
+    || orgId.toLowerCase() !== actorContext.org_id.toLowerCase()) {
     throw new SafeRetryError(
       'RETRY_TENANT_CONTEXT_INVALID',
       'Retry tenant context is invalid',
@@ -72,7 +94,14 @@ export function buildSafeRetry(execution: RetryableExecution, orgId?: string | n
 
   return {
     workflowId: prepared.workflowId,
-    triggerPayload: { tender_id: prepared.tenderId, org_id: orgId },
+    triggerPayload: {
+      tender_id: prepared.tenderId,
+      org_id: actorContext.org_id.toLowerCase(),
+      user_id: actorContext.actor_user_id.toLowerCase(),
+    },
     correlationId: prepared.correlationId,
+    actorUserId: actorContext.actor_user_id.toLowerCase(),
+    orgId: actorContext.org_id.toLowerCase(),
+    retryRootExecutionId: prepared.retryRootExecutionId,
   };
 }

@@ -30,12 +30,17 @@ async function runTrigger(workflow: WorkflowDefinition, json: Record<string, unk
 }
 
 for (const file of [
+  'tender-stage1-pdf.json',
+  'tender-stage1-gaeb.json',
   'tender-stage2-requirements.json',
   'tender-stage3-evaluation.json',
 ]) {
-  test(`${file} accepts only a complete UUID tenant context`, async () => {
+  test(`${file} accepts only the canonical tender and organisation passed by preflight`, async () => {
     const workflow = loadWorkflow(file);
-    const output = await runTrigger(workflow, { body: { tender_id: tenderId, org_id: orgId } });
+    const output = await runTrigger(workflow, {
+      tender_id: tenderId,
+      org_id: orgId,
+    });
 
     assert.deepEqual(output, [[{ json: { tender_id: tenderId, org_id: orgId } }]]);
 
@@ -68,6 +73,18 @@ for (const file of [
     assert.deepEqual(startNodes, ['trigger']);
   });
 }
+
+test('no workflow definition can pass the actor or lease envelope into a node', () => {
+  for (const file of [
+    'tender-stage1-pdf.json',
+    'tender-stage1-gaeb.json',
+    'tender-stage2-requirements.json',
+    'tender-stage3-evaluation.json',
+  ]) {
+    const source = readFileSync(new URL(`../workflows/${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /user_id|admission_id/, file);
+  }
+});
 
 test('stage 2 scopes every privileged tender read and update to both IDs', () => {
   const workflow = loadWorkflow('tender-stage2-requirements.json');
