@@ -200,8 +200,9 @@ test('claimed Stage 1 rejects hostile graphs before telemetry or workflow nodes'
     let workflowLoads = 0;
     const runner = new WorkflowRunner({
       async rpc(name: string) {
-        assert.equal(name, 'claim_pipeline_admission');
-        return { data: true, error: null };
+        if (name === 'claim_pipeline_admission') return { data: true, error: null };
+        assert.equal(name, 'claim_tender_processing_stage');
+        return { data: [{ claimed: true, reason: null, processing_status: 'extracting_metadata' }], error: null };
       },
       from() { tableCalls += 1; throw new Error('telemetry must not run'); },
     } as never, () => {
@@ -257,6 +258,7 @@ test('only the top-level envelope body unwraps and legitimate nested body data s
 function recordingClient() {
   const inserts: Array<{ table: string; value: Record<string, unknown> }> = [];
   const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
+  const rpcs: Array<{ name: string; parameters: Record<string, unknown> }> = [];
   const mutation = {
     eq() {
       return mutation;
@@ -269,8 +271,33 @@ function recordingClient() {
   return {
     inserts,
     updates,
+    rpcs,
     client: {
-      async rpc() {
+      async rpc(name: string, parameters: Record<string, unknown>) {
+        rpcs.push({ name, parameters });
+        if (name === 'record_tender_processing_failure') {
+          return {
+            data: [{
+              tender_id: parameters.p_tender_id,
+              org_id: parameters.p_org_id,
+              affected_count: 1,
+              processing_attempt_count: 1,
+            }],
+            error: null,
+          };
+        }
+        if (name === 'claim_tender_processing_stage') {
+          return {
+            data: [{
+              claimed: true,
+              reason: null,
+              processing_status: parameters.p_processing_stage === 'stage1'
+                ? 'extracting_metadata'
+                : parameters.p_processing_stage === 'stage2' ? 'extracting_details' : 'evaluating',
+            }],
+            error: null,
+          };
+        }
         return { data: true, error: null };
       },
       from(table: string) {
@@ -309,7 +336,7 @@ test('Stage 1 defers its telemetry tender link until the workflow succeeds', asy
   }
 });
 
-test('failed Stage 1 telemetry remains unlinked when no tender was created', async () => {
+test('failed Stage 1 records canonical durable failure after telemetry', async () => {
   const database = recordingClient();
   const runner = new WorkflowRunner(database.client as never, (workflowId) => ({
     id: workflowId,
@@ -328,13 +355,23 @@ test('failed Stage 1 telemetry remains unlinked when no tender was created', asy
     org_id: orgId,
     user_id: actorId,
     admission_id: admissionId,
-  });
+  }, { correlationId: 'tenderly-upload-opaque' });
 
   assert.equal(result.status, 'error');
   const execution = database.inserts.find((entry) => entry.table === 'flow_executions');
   assert.equal(execution?.value.tender_id, null);
   const completion = database.updates.find((entry) => entry.table === 'flow_executions');
   assert.equal('tender_id' in (completion?.value ?? {}), false);
+  assert.deepEqual(database.rpcs.at(-1), {
+    name: 'record_tender_processing_failure',
+    parameters: {
+      p_tender_id: tenderId,
+      p_org_id: orgId,
+      p_processing_stage: 'stage1',
+      p_processing_error_code: 'FLOW_STAGE_FAILED',
+      p_processing_correlation_id: 'tenderly-upload-opaque',
+    },
+  });
 });
 
 function passthroughWorkflow(workflowId: string): WorkflowDefinition {
@@ -424,3 +461,63 @@ test('missing, forged, or replayed leases stop every protected workflow before t
     assert.equal(workflowLoads, 0);
   }
 });
+
+for (const failurePoint of ['initial', 'node', 'final'] as const) {
+  test(`${failurePoint} telemetry failure records exactly one durable telemetry failure`, async () => {
+    const failureCalls: Array<Record<string, unknown>> = [];
+    const mutation = (table: string, kind: 'insert' | 'update') => {
+      const value = {
+        eq() { return value; },
+        async select() {
+          const shouldFail = failurePoint === 'initial'
+            ? table === 'flow_executions' && kind === 'insert'
+            : failurePoint === 'node'
+              ? table === 'flow_node_runs' && kind === 'insert'
+              : table === 'flow_executions' && kind === 'update';
+          return shouldFail
+            ? { data: null, error: { message: 'raw database and customer detail' } }
+            : { data: [{}], error: null };
+        },
+      };
+      return value;
+    };
+    const runner = new WorkflowRunner({
+      async rpc(name: string, parameters: Record<string, unknown>) {
+        if (name === 'claim_pipeline_admission') return { data: true, error: null };
+        if (name === 'claim_tender_processing_stage') {
+          return { data: [{ claimed: true, reason: null, processing_status: 'extracting_details' }], error: null };
+        }
+        if (name === 'record_tender_processing_failure') {
+          failureCalls.push(parameters);
+          return { data: [{
+            tender_id: tenderId,
+            org_id: orgId,
+            affected_count: 1,
+            processing_attempt_count: 1,
+          }], error: null };
+        }
+        return { data: true, error: null };
+      },
+      from(table: string) {
+        return {
+          insert() { return mutation(table, 'insert'); },
+          update() { return mutation(table, 'update'); },
+        };
+      },
+    } as never, passthroughWorkflow);
+
+    await assert.rejects(
+      runner.run('tender-stage2-requirements', {
+        tender_id: tenderId,
+        org_id: orgId,
+        user_id: actorId,
+        admission_id: admissionId,
+      }),
+      (error: unknown) => error instanceof TelemetryPersistenceError
+        && !String(error).includes('customer'),
+    );
+    assert.equal(failureCalls.length, 1);
+    assert.equal(failureCalls[0].p_processing_stage, 'stage2');
+    assert.equal(failureCalls[0].p_processing_error_code, 'FLOW_TELEMETRY_FAILED');
+  });
+}

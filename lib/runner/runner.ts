@@ -24,6 +24,11 @@ import {
   preflightWorkflowPayload,
 } from '../tenant-context.ts';
 import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
+import {
+  canonicalProcessingStage,
+  claimTenderProcessingStage,
+  persistTenderFailure,
+} from '../tender-failure-persistence.ts';
 import type { WorkflowNode, NodeRetryConfig } from '@/types/workflow';
 import type { ExecutionItem, ExecutionContext, NodeExecutor } from '@/types/execution';
 
@@ -112,9 +117,10 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = preflight.trustedContext
-      ? normalizeCorrelationId(options.retryRootExecutionId, executionId)
-      : normalizeCorrelationId(options.correlationId, executionId);
+    const correlationId = normalizeCorrelationId(
+      options.retryRootExecutionId ?? options.correlationId,
+      executionId,
+    );
 
     let receiverOwnedLease: string | null = null;
     if (preflight.trustedContext) {
@@ -133,6 +139,15 @@ export class WorkflowRunner {
     }
 
     try {
+      if (preflight.trustedContext) {
+        await claimTenderProcessingStage(this.supabase as unknown as Parameters<typeof claimTenderProcessingStage>[0], {
+          tenderId: preflight.trustedContext.tender_id,
+          orgId: preflight.trustedContext.org_id,
+          stage: canonicalProcessingStage(preflight.trustedContext.operation),
+          isRetry: Boolean(options.retryRootExecutionId),
+        });
+      }
+
       // Business payload traversal is deliberately deferred until the durable
       // admission has been claimed. This prevents rejected/replayed requests
       // from consuming clone, telemetry, parser, or LLM work.
@@ -143,21 +158,39 @@ export class WorkflowRunner {
         ?? (workflowPayload.tender_id as string | undefined);
       const isStageOneUpload = preflight.trustedContext?.operation === 'upload';
 
+      const persistKnownTenderFailure = async (safeErrorCode: SafeErrorCode): Promise<void> => {
+        if (!preflight.trustedContext || !tender_id) return;
+        await persistTenderFailure(this.supabase as unknown as Parameters<typeof persistTenderFailure>[0], {
+          tenderId: tender_id,
+          orgId: preflight.trustedContext.org_id,
+          stage: canonicalProcessingStage(preflight.trustedContext.operation),
+          safeErrorCode,
+          correlationId,
+        });
+      };
+
       // Stage 1 creates the tender inside the workflow, so its telemetry row
       // cannot satisfy the immediate tender foreign key yet. Link the same
       // redacted execution row only after the workflow (including its tender
       // upsert) has completed successfully. Existing-tender stages keep their
       // link from the start.
-      await persistExactlyOneTelemetryRow(() => this.supabase
-      .from('flow_executions')
-      .insert(createExecutionTelemetry({
-        executionId,
-        workflowId: resolvedWorkflowId,
-        tenderId: isStageOneUpload ? null : tender_id,
-        correlationId,
-        startedAt: new Date().toISOString(),
-      }) as any)
-      .select('id'));
+      try {
+        await persistExactlyOneTelemetryRow(() => this.supabase
+        .from('flow_executions')
+        .insert(createExecutionTelemetry({
+          executionId,
+          workflowId: resolvedWorkflowId,
+          tenderId: isStageOneUpload ? null : tender_id,
+          correlationId,
+          startedAt: new Date().toISOString(),
+        }) as any)
+        .select('id'));
+      } catch (error) {
+        if (isTelemetryPersistenceError(error)) {
+          await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+        }
+        throw error;
+      }
 
     let responsePayload: ExecutionItem[] | undefined;
     let executionErrorCode: SafeErrorCode | undefined;
@@ -309,13 +342,25 @@ export class WorkflowRunner {
 
     // Update execution record
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await persistExactlyOneTelemetryRow(() => (this.supabase
-      .from('flow_executions') as any)
-      .update(completion)
-      .eq('id', executionId)
-      .select('id'));
+    try {
+      await persistExactlyOneTelemetryRow(() => (this.supabase
+        .from('flow_executions') as any)
+        .update(completion)
+        .eq('id', executionId)
+        .select('id'));
+    } catch (error) {
+      if (isTelemetryPersistenceError(error)) {
+        await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+      }
+      throw error;
+    }
 
-    if (telemetryFailure) throw telemetryFailure;
+    if (telemetryFailure) {
+      await persistKnownTenderFailure('TELEMETRY_PERSISTENCE_FAILED');
+      throw telemetryFailure;
+    }
+
+    if (executionErrorCode) await persistKnownTenderFailure(executionErrorCode);
 
       return {
         execution_id: executionId,

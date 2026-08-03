@@ -7,6 +7,10 @@ import {
 } from './retry.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
 import { AdmissionControlError } from './admission-control.ts';
+import {
+  TenderStagePersistenceError,
+  TenderStageTransitionError,
+} from './tender-failure-persistence.ts';
 
 interface QueryResult<T> {
   data: T | null;
@@ -157,6 +161,9 @@ export async function handleRetryExecution(
       { headers: { 'Cache-Control': 'private, no-store' } },
     );
   } catch (error) {
+    if (error instanceof TenderStageTransitionError || error instanceof TenderStagePersistenceError) {
+      return errorResponse(error.code, error.status);
+    }
     if (isTelemetryPersistenceError(error)) return errorResponse(error.code, 503);
     return errorResponse('EXECUTION_FAILED', 500);
   }

@@ -1,0 +1,73 @@
+[
+  {
+    "name": "bridge tender with explicit critical criteria",
+    "source_text": "Brückensanierung Wertachbrücke, Augsburg. Auftraggeber: Stadt Augsburg. Angebotsfrist: 30.09.2026. Nachweis eines gültigen Qualitätsmanagementsystems nach ISO 9001. Mindestens zwei Referenzen über vergleichbare Brückensanierungen sind mit dem Angebot vorzulegen.",
+    "metadata_response": {
+      "title": "Brückensanierung Wertachbrücke",
+      "summary": "Die Ausschreibung umfasst die Sanierung der Wertachbrücke in Augsburg.",
+      "buyer": "Stadt Augsburg",
+      "region": "Augsburg",
+      "deadline": "2026-09-30",
+      "category": "Brückenbau",
+      "tender_type": "works"
+    },
+    "expected_critical_fields": {
+      "title": "Brückensanierung Wertachbrücke",
+      "buyer": "Stadt Augsburg",
+      "region": "Augsburg",
+      "deadline": "2026-09-30"
+    },
+    "requirements_response": [
+      {
+        "id": "REQ-ISO-9001",
+        "category": "Zertifizierung",
+        "title": "ISO 9001",
+        "description": "Ein gültiges ISO-9001-Zertifikat ist mit dem Angebot vorzulegen.",
+        "is_critical": true,
+        "is_implicit": false,
+        "source_fragments": ["Nachweis eines gültigen Qualitätsmanagementsystems nach ISO 9001."]
+      },
+      {
+        "id": "REQ-REFERENZEN",
+        "category": "Referenz",
+        "title": "Zwei Brückenreferenzen",
+        "description": "Mindestens zwei vergleichbare Brückensanierungen sind nachzuweisen.",
+        "is_critical": true,
+        "is_implicit": false,
+        "source_fragments": ["Mindestens zwei Referenzen über vergleichbare Brückensanierungen sind mit dem Angebot vorzulegen."]
+      }
+    ],
+    "expected_critical_requirement_ids": ["REQ-ISO-9001", "REQ-REFERENZEN"]
+  },
+  {
+    "name": "road tender with explicitly missing deadline",
+    "source_text": "Deckenerneuerung Bahnhofstraße, Rosenheim. Auftraggeber: Stadt Rosenheim. Die Abgabefrist wird mit einer späteren Bekanntmachung festgelegt. Ein Mindestjahresumsatz von 2.000.000 EUR ist nachzuweisen.",
+    "metadata_response": {
+      "title": "Deckenerneuerung Bahnhofstraße",
+      "summary": "Die Ausschreibung umfasst die Erneuerung der Fahrbahndecke in Rosenheim.",
+      "buyer": "Stadt Rosenheim",
+      "region": "Rosenheim",
+      "deadline": null,
+      "category": "Straßenbau",
+      "tender_type": "works"
+    },
+    "expected_critical_fields": {
+      "title": "Deckenerneuerung Bahnhofstraße",
+      "buyer": "Stadt Rosenheim",
+      "region": "Rosenheim",
+      "deadline": null
+    },
+    "requirements_response": [
+      {
+        "id": "REQ-UMSATZ",
+        "category": "Finanziell",
+        "title": "Mindestumsatz",
+        "description": "Ein Mindestjahresumsatz von 2.000.000 EUR ist nachzuweisen.",
+        "is_critical": true,
+        "is_implicit": false,
+        "source_fragments": ["Ein Mindestjahresumsatz von 2.000.000 EUR ist nachzuweisen."]
+      }
+    ],
+    "expected_critical_requirement_ids": ["REQ-UMSATZ"]
+  }
+]

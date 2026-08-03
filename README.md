@@ -141,10 +141,17 @@ not retained.
 
 Use [`docs/flowtender-telemetry-rollout.md`](./docs/flowtender-telemetry-rollout.md)
 for the coordinated maintenance procedure. A disposable local Supabase database can
-exercise migrations 001 → 002, a second retry of 002, RLS/uniqueness, and purge-count
+exercise the canonical shared overlay (`001`–`004`, then `016`–`019`), migration
+retries, RLS/uniqueness, stale-claim isolation, browser-write grants, and purge-count
 assertions with `npm run test:migration-db`; the script refuses non-local database URLs
 and requires `FLOWTENDER_TEST_DATABASE_DISPOSABLE=YES` confirmation alongside
 `FLOWTENDER_TEST_DATABASE_URL`.
+
+Flowtender is the deployment source for this shared Supabase migration overlay.
+Versions `005`–`015` belong to Tenderly's historical application schema and were
+applied before the shared ledger was introduced; they must not be repaired, replayed,
+or inferred from the numbering gap. Migrations `016`–`019` are byte-identical reviewed
+mirrors of Tenderly's durable-processing and alert migrations.
 
 ### Pipeline admission limits
 

@@ -1,6 +1,10 @@
 import { isServiceAuthorized } from './auth.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
 import { AdmissionControlError } from './admission-control.ts';
+import {
+  TenderStagePersistenceError,
+  TenderStageTransitionError,
+} from './tender-failure-persistence.ts';
 import { IngressError, readJsonIngress } from './ingress.ts';
 
 interface WebhookRunResult {
@@ -14,8 +18,10 @@ interface WebhookRunResult {
 type RunWebhook = (
   workflowId: string,
   payload: Record<string, unknown>,
-  options: { synchronous: true; correlationId?: string },
+  options: { synchronous: true; correlationId?: string; retryRootExecutionId?: string },
 ) => Promise<WebhookRunResult>;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function resolveWebhookWorkflow(
   path: string,
@@ -77,9 +83,18 @@ export async function handleWebhookRequest(
   }
 
   try {
+    const retryRootExecutionId = request.headers.get('x-retry-root-execution-id') ?? undefined;
+    if (retryRootExecutionId && !UUID_PATTERN.test(retryRootExecutionId)) {
+      return Response.json(
+        { error_code: 'INVALID_RETRY_CONTEXT' },
+        { status: 400, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    const correlationId = request.headers.get('x-correlation-id') ?? undefined;
     const result = await runWebhook(workflowId, payload, {
       synchronous: true,
-      correlationId: request.headers.get('x-correlation-id') ?? undefined,
+      ...(correlationId ? { correlationId } : {}),
+      ...(retryRootExecutionId ? { retryRootExecutionId: retryRootExecutionId.toLowerCase() } : {}),
     });
 
     if (result.status === 'error') {
@@ -96,6 +111,12 @@ export async function handleWebhookRequest(
     return Response.json(responseData, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     if (error instanceof AdmissionControlError) {
+      return Response.json(
+        { error_code: error.code },
+        { status: error.status, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    if (error instanceof TenderStageTransitionError || error instanceof TenderStagePersistenceError) {
       return Response.json(
         { error_code: error.code },
         { status: error.status, headers: { 'Cache-Control': 'no-store' } },

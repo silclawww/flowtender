@@ -62,66 +62,98 @@ function applyFilters(
   return q;
 }
 
+function isReturnedRow(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // supabase.query — SELECT rows with optional filters
 // Config: { table: string, filters?: FilterCondition[], select?: string, single?: boolean }
-export const supabaseQueryExecutor: NodeExecutor = {
-  async execute(config, input, context) {
-    const supabase = createServiceClient();
-    const table = evalTemplate(config.table as string, input, context) as string;
-    const selectCols = (config.select as string) || '*';
-    const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
-      ...f,
-      value: evalTemplate(String(f.value), input, context),
-    }));
-    const single = config.single === true;
-    
-    let query = supabase.from(table).select(selectCols);
-    query = applyFilters(query, filters);
-    
-    if (single) {
-      const { data, error } = await query.single();
-      if (error) throw new Error(`supabase.query error: ${error.message}`);
-      return [[{ json: data as Record<string, unknown> }]];
-    } else {
-      const { data, error } = await query;
-      if (error) throw new Error(`supabase.query error: ${error.message}`);
-      return [((data || []) as Record<string, unknown>[]).map(row => ({ json: row }))];
-    }
-  }
-};
+export function createSupabaseQueryExecutor(
+  createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
+): NodeExecutor {
+  return {
+    async execute(config, input, context) {
+      const table = evalTemplate(config.table as string, input, context) as string;
+      const selectCols = (config.select as string) || '*';
+      const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
+        ...f,
+        value: evalTemplate(String(f.value), input, context),
+      }));
+      const single = config.single === true;
+
+      let result: { data: unknown; error: unknown };
+      try {
+        const supabase = createClient();
+        let query = supabase.from(table).select(selectCols);
+        query = applyFilters(query, filters);
+        result = single ? await query.single() : await query;
+      } catch {
+        throw new Error('SUPABASE_QUERY_FAILED');
+      }
+
+      if (result.error) {
+        throw new Error('SUPABASE_QUERY_FAILED');
+      }
+      if (single) {
+        if (!isReturnedRow(result.data)) {
+          throw new Error('SUPABASE_QUERY_FAILED');
+        }
+        return [[{ json: result.data }]];
+      }
+      if (!Array.isArray(result.data) || !result.data.every(isReturnedRow)) {
+        throw new Error('SUPABASE_QUERY_FAILED');
+      }
+      return [result.data.map(row => ({ json: row }))];
+    },
+  };
+}
+
+export const supabaseQueryExecutor = createSupabaseQueryExecutor();
 
 // supabase.upsert — INSERT or UPDATE (upsert by primary key)
 // Config: { table: string, data: 'auto_map' | Record<string,unknown>, on_conflict?: string }
-export const supabaseUpsertExecutor: NodeExecutor = {
-  async execute(config, input, context) {
-    const supabase = createServiceClient();
-    const table = evalTemplate(config.table as string, input, context) as string;
-    
-    let data: Record<string, unknown>;
-    if (config.data === 'auto_map' || !config.data) {
-      // Use the full $json as the row data
-      data = input[0]?.json || {};
-    } else if (typeof config.data === 'object') {
-      // Evaluate each field value
-      data = {};
-      for (const [k, v] of Object.entries(config.data as Record<string, unknown>)) {
-        data[k] = evalTemplate(String(v), input, context);
+export function createSupabaseUpsertExecutor(
+  createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
+): NodeExecutor {
+  return {
+    async execute(config, input, context) {
+      const table = evalTemplate(config.table as string, input, context) as string;
+
+      let data: Record<string, unknown>;
+      if (config.data === 'auto_map' || !config.data) {
+        // Use the full $json as the row data
+        data = input[0]?.json || {};
+      } else if (typeof config.data === 'object') {
+        // Evaluate each field value
+        data = {};
+        for (const [k, v] of Object.entries(config.data as Record<string, unknown>)) {
+          data[k] = evalTemplate(String(v), input, context);
+        }
+      } else {
+        data = input[0]?.json || {};
       }
-    } else {
-      data = input[0]?.json || {};
-    }
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data: result, error } = await (supabase
-      .from(table) as any)
-      .upsert(data, { onConflict: (config.on_conflict as string) || 'id' })
-      .select()
-      .single();
-    
-    if (error) throw new Error(`supabase.upsert error: ${error.message}`);
-    return [[{ json: (result || data) as Record<string, unknown> }]];
-  }
-};
+
+      let mutation: { data: unknown; error: unknown };
+      try {
+        const supabase = createClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mutation = await (supabase.from(table) as any)
+          .upsert(data, { onConflict: (config.on_conflict as string) || 'id' })
+          .select()
+          .single();
+      } catch {
+        throw new Error('SUPABASE_UPSERT_FAILED');
+      }
+
+      if (mutation.error || !isReturnedRow(mutation.data)) {
+        throw new Error('SUPABASE_UPSERT_FAILED');
+      }
+      return [[{ json: mutation.data }]];
+    },
+  };
+}
+
+export const supabaseUpsertExecutor = createSupabaseUpsertExecutor();
 
 // supabase.update — UPDATE rows matching filters
 // Config: { table: string, filters: FilterCondition[], data: 'auto_map' | Record<string,unknown> }
