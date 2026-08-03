@@ -66,6 +66,27 @@ function llmResponse(content: unknown): Record<string, unknown> {
   return { choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) } }] };
 }
 
+function textlessPdf(): Buffer {
+  const stream = '';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}endstream`,
+  ];
+  const parts = ['%PDF-1.4\n'];
+  const offsets: number[] = [];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(parts.join(''), 'ascii'));
+    parts.push(`${index + 1} 0 obj\n${object}\nendobj\n`);
+  }
+  const xrefOffset = Buffer.byteLength(parts.join(''), 'ascii');
+  parts.push('xref\n0 5\n0000000000 65535 f\r\n');
+  for (const offset of offsets) parts.push(`${String(offset).padStart(10, '0')} 00000 n\r\n`);
+  parts.push(`trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+  return Buffer.from(parts.join(''), 'ascii');
+}
+
 const validPdfMetadata = {
   title: 'Brückensanierung Augsburg',
   summary: 'Die Ausschreibung umfasst die Sanierung einer Straßenbrücke.',
@@ -83,6 +104,25 @@ const validGaebMetadata = {
   deadline: '2026-10-15',
   trade_category: 'Kanalbau',
 };
+
+test('stage 1 PDF rejects a structurally valid no-text document before metadata extraction', async () => {
+  const logged: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => logged.push(values);
+  try {
+    await assert.rejects(
+      () => codeExecutor.execute(
+        { code: workflowCode('tender-stage1-pdf.json', 'extract-text') },
+        [{ json: { file_data: textlessPdf().toString('base64') } }],
+        new Map(),
+      ),
+      /PDF_TEXT_UNAVAILABLE/,
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.deepEqual(logged, [['PDF_TEXT_UNAVAILABLE']]);
+});
 
 test('stage 1 PDF fails closed when the metadata LLM returns invalid JSON', async () => {
   await assertInvalidJsonFailsSafely('tender-stage1-pdf.json', 'parse-metadata');
