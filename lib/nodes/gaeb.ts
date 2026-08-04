@@ -1,8 +1,6 @@
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
 import * as path from 'path';
-import { Worker } from 'node:worker_threads';
-import { WorkflowDeadlineError } from '../retry-errors.ts';
-import type { ExecutionRuntime } from '@/types/execution';
+import { runInWorker } from './worker-runtime.ts';
 
 // Returns the path to Tenderly GAEB parser at runtime (not build time)
 // This must be a function to avoid Turbopack static analysis
@@ -33,47 +31,6 @@ const workerSource = `
   }
 `;
 
-function parseGaebInWorker(
-  parserPath: string,
-  fileData: string,
-  fileName: string,
-  runtime?: ExecutionRuntime,
-): Promise<GaebResult> {
-  if (runtime?.signal?.aborted) return Promise.reject(new WorkflowDeadlineError());
-  const remaining = (runtime?.deadline ?? Number.POSITIVE_INFINITY) - Date.now();
-  if (remaining <= 0) return Promise.reject(new WorkflowDeadlineError());
-
-  const worker = new Worker(workerSource, {
-    eval: true,
-    workerData: { parserPath, fileData, fileName },
-  });
-
-  return new Promise((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      runtime?.signal?.removeEventListener('abort', onDeadline);
-      void worker.terminate();
-      callback();
-    };
-    const onDeadline = () => finish(() => reject(new WorkflowDeadlineError()));
-
-    worker.once('message', (message: { result?: GaebResult; error?: string }) => {
-      if (message.error) finish(() => reject(new Error(message.error)));
-      else finish(() => resolve(message.result!));
-    });
-    worker.once('error', error => finish(() => reject(error)));
-    worker.once('exit', code => {
-      if (code !== 0) finish(() => reject(new Error('GAEB parser worker exited unexpectedly')));
-    });
-    runtime?.signal?.addEventListener('abort', onDeadline, { once: true });
-    if (Number.isFinite(remaining)) timer = setTimeout(onDeadline, Math.max(1, remaining));
-  });
-}
-
 export const gaebParseExecutor: NodeExecutor = {
   async execute(config, input, _context, runtime) {
     const dataField = (config.file_data_field as string) || 'file_data';
@@ -88,7 +45,11 @@ export const gaebParseExecutor: NodeExecutor = {
     }
     
     const parserPath = getGaebParserPath();
-    const result = await parseGaebInWorker(parserPath, fileData, fileName, runtime);
+    const result = await runInWorker<GaebResult>(
+      workerSource,
+      { parserPath, fileData, fileName },
+      runtime,
+    );
     
     return [[{
       json: {

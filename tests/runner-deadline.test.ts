@@ -136,6 +136,14 @@ test('actual runner interrupts synchronous code at the workflow deadline', async
   assertRedactedTimeout(database, result);
 });
 
+test('actual runner interrupts synchronous code after an async boundary', async () => {
+  const { database, result } = await withMutedErrors(() => runWithDeadline('code', {
+    code: 'await new Promise(resolve => setTimeout(resolve, 1)); while (true) {}',
+  }));
+
+  assertRedactedTimeout(database, result);
+});
+
 test('actual runner interrupts a synchronous GAEB parser at the workflow deadline', async () => {
   const originalCwd = process.cwd();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'flowtender-gaeb-deadline-'));

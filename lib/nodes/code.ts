@@ -1,86 +1,92 @@
-import * as crypto from 'node:crypto';
-import * as path from 'node:path';
-import * as util from 'node:util';
-import * as zlib from 'node:zlib';
-
-import '@napi-rs/canvas';
-import * as pdfParse from 'pdf-parse';
-import { getPath as getPdfWorkerPath } from 'pdf-parse/worker';
-
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
-import { runSynchronous } from './synchronous.ts';
+import { WorkflowDeadlineError } from '../retry-errors.ts';
+import { runInWorker } from './worker-runtime.ts';
 
-pdfParse.PDFParse.setWorker(getPdfWorkerPath());
+// Keep the worker-only PDF runtime in the serverless output trace.
+async function tracePdfRuntime() {
+  await import('@napi-rs/canvas');
+  await import('pdf-parse');
+  await import('pdf-parse/worker');
+}
+void tracePdfRuntime;
 
-// Modules allowed in code nodes (safe subset)
-const ALLOWED_MODULES = new Map<string, object>([
-  ['crypto', crypto],
-  ['util', util],
-  ['path', path],
-  ['zlib', zlib],
-  ['pdf-parse', pdfParse],
-]);
-
-export const codeExecutor: NodeExecutor = {
-  async execute(config, input, context, runtime) {
-    const code = config.code as string;
-    if (!code) return [[...input]]; // passthrough if no code
-    
-    // Build $input helper
+const workerSource = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  (async () => {
+    const allowedModules = new Map([
+      ['crypto', require('node:crypto')],
+      ['util', require('node:util')],
+      ['path', require('node:path')],
+      ['zlib', require('node:zlib')],
+    ]);
+    const safeRequire = (name) => {
+      if (name === 'pdf-parse') {
+        require('@napi-rs/canvas');
+        const pdfParse = require('pdf-parse');
+        pdfParse.PDFParse.setWorker(require('pdf-parse/worker').getPath());
+        return pdfParse;
+      }
+      const module = allowedModules.get(name);
+      if (!module) throw new Error("require('" + name + "') not allowed in code nodes");
+      return module;
+    };
+    const workerConsole = Object.fromEntries(['log', 'warn', 'error'].map(method => [
+      method,
+      (...args) => parentPort.postMessage({ console: method, args }),
+    ]));
+    const input = workerData.input;
+    const nodeContext = new Map(workerData.context);
     const $input = {
       first: () => input[0] || { json: {} },
       all: () => input,
       item: input[0] || { json: {} },
     };
     const $json = $input.first().json;
-    
-    // Build $('nodeId') reference function
-    const $nodeRef = (nodeId: string) => ({
-      first: () => context.get(nodeId)?.[0] || { json: {} },
-      all: () => context.get(nodeId) || [],
+    const $nodeRef = nodeId => ({
+      first: () => nodeContext.get(nodeId)?.[0] || { json: {} },
+      all: () => nodeContext.get(nodeId) || [],
     });
-    
-    // Restricted require
-    const safeRequire = (mod: string) => {
-      const loadedModule = ALLOWED_MODULES.get(mod);
-      if (!loadedModule) throw new Error(`require('${mod}') not allowed in code nodes`);
-      return loadedModule;
-    };
-    
-    const deadlineFetch: typeof fetch = (resource, init) => {
-      const signals = [init?.signal, runtime?.signal]
-        .filter((signal): signal is AbortSignal => Boolean(signal));
+    const deadlineSignal = Number.isFinite(workerData.deadline)
+      ? AbortSignal.timeout(Math.max(1, workerData.deadline - Date.now()))
+      : undefined;
+    const deadlineFetch = (resource, init) => {
+      const signals = [init?.signal, deadlineSignal].filter(Boolean);
       return fetch(resource, {
         ...init,
         signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
       });
     };
+    const execute = new Function(
+      '$input', '$json', '$', 'require', 'JSON', 'fetch', 'console',
+      'return (async () => { ' + workerData.code + '\\n})()',
+    );
+    const result = await execute(
+      $input, $json, $nodeRef, safeRequire, JSON, deadlineFetch, workerConsole,
+    );
+    parentPort.postMessage({ result });
+  })().catch(error => {
+    parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
+  });
+`;
+
+export const codeExecutor: NodeExecutor = {
+  async execute(config, input, context, runtime) {
+    const code = config.code as string;
+    if (!code) return [[...input]]; // passthrough if no code
+
+    const $json = input[0]?.json ?? {};
 
     try {
-      const result = structuredClone(await runSynchronous<Promise<unknown>>(
-        `(async () => { ${code}\n})()`,
+      const result = await runInWorker<unknown>(
+        workerSource,
         {
-          $input,
-          $json,
-          $: $nodeRef,
-          require: safeRequire,
-          JSON,
-          Buffer,
-          fetch: deadlineFetch,
-          AbortController,
-          AbortSignal,
-          setTimeout,
-          clearTimeout,
-          setInterval,
-          clearInterval,
-          console,
-          URL,
-          URLSearchParams,
-          TextEncoder,
-          TextDecoder,
+          code,
+          input,
+          context: [...context.entries()],
+          deadline: runtime?.deadline ?? Number.POSITIVE_INFINITY,
         },
         runtime,
-      ));
+      );
       
       // Normalize result to ExecutionItem[][]
       if (!result) return [[{ json: $json }]];
@@ -97,7 +103,7 @@ export const codeExecutor: NodeExecutor = {
       }
       return [[{ json: result as Record<string, unknown> }]];
     } catch (err) {
-      if (err instanceof Error && err.name === 'WorkflowDeadlineError') throw err;
+      if (err instanceof WorkflowDeadlineError) throw err;
       const error = err instanceof Error ? err.message : String(err);
       throw new Error(`Code node execution error: ${error}`);
     }
