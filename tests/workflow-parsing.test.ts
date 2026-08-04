@@ -3,12 +3,14 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { codeExecutor } from '../lib/nodes/code.ts';
+import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
 import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 
 interface WorkflowCodeNode {
   id: string;
   type: string;
-  config: { body?: string; code?: string; select?: string };
+  config: { body?: string; code?: string; condition?: string; select?: string };
+  retry?: { max_attempts?: number };
 }
 
 function workflowNode(file: string, nodeId: string): WorkflowCodeNode {
@@ -644,6 +646,7 @@ test('stage 3 fails closed when the evaluation LLM returns invalid JSON', async 
     ['load-requirements', [{ json: { id: 'tender-id' } }]],
   ]);
   await assertInvalidJsonFailsSafely('tender-stage3-evaluation.json', 'parse-evaluation', context);
+  await assertInvalidJsonFailsSafely('tender-stage3-evaluation.json', 'inspect-evaluation', context);
 });
 
 const validEvaluation = {
@@ -702,12 +705,114 @@ function stage3Context(): ExecutionContext {
   return new Map([
     ['load-requirements', [{ json: {
       id: 'tender-id',
-      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements: [
+        { id: 'REQ-001', description: 'Nachweis A', source_fragments: ['Quelle A'] },
+        { id: 'REQ-002', description: 'Nachweis B', source_fragments: ['Quelle B'] },
+      ],
       requirements_coverage: completeRequirementsCoverage(),
     } }]],
     ['geocode-distance', [{ json: { distance_km: 47.5, distance_note: '47,5 km zum Bauort' } }]],
   ]);
 }
+
+test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
+  const valid = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
+    [{ json: llmResponse(validEvaluation) }],
+    stage3Context(),
+  );
+  assert.equal(valid[0][0].json.reconciliation_required, false);
+
+  const invalidDraft = {
+    ...validEvaluation,
+    strategic_fit_score: '82',
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'fulfilled', is_blocking: false },
+      { id: 'REQ-UNKNOWN', status: 'partial', is_blocking: false },
+    ],
+    ignored_model_note: 'must never be copied into the repair prompt',
+  };
+  const inspected = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
+    [{ json: llmResponse(invalidDraft) }],
+    stage3Context(),
+  );
+  const output = inspected[0][0].json;
+  assert.equal(output.reconciliation_required, true);
+  assert.deepEqual(
+    (output.reconciliation_findings as Array<{ path: string }>).map((finding) => finding.path),
+    [
+      'strategic_fit_score',
+      'eligibility_requirements[0].status',
+      'eligibility_requirements',
+    ],
+  );
+  assert.equal(
+    'ignored_model_note' in (output.reconciliation_candidate as Record<string, unknown>),
+    false,
+  );
+
+  const workflow = JSON.parse(readFileSync(
+    new URL('../workflows/tender-stage3-evaluation.json', import.meta.url),
+    'utf8',
+  )) as {
+    nodes: WorkflowCodeNode[];
+    edges: Array<{ from: string; from_output: number; to: string }>;
+  };
+  const repairNodes = workflow.nodes.filter((node) => node.id === 'reconcile-evaluation-llm');
+  assert.equal(repairNodes.length, 1);
+  assert.equal(repairNodes[0].retry?.max_attempts, 1);
+  assert.match(repairNodes[0].config.body ?? '', /QUELLANFORDERUNGEN/);
+  assert.match(repairNodes[0].config.body ?? '', /reconciliation_findings/);
+  assert.match(repairNodes[0].config.body ?? '', /reconciliation_candidate/);
+  assert.deepEqual(
+    workflow.edges
+      .filter((edge) => edge.from === 'route-evaluation-reconciliation')
+      .map((edge) => [edge.from_output, edge.to])
+      .sort((left, right) => Number(left[0]) - Number(right[0])),
+    [[0, 'reconcile-evaluation-llm'], [1, 'parse-evaluation']],
+  );
+
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.GEMINI_API_KEY;
+  const requests: Array<{ body?: string }> = [];
+  process.env.GEMINI_API_KEY = 'test-key';
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ body: typeof init?.body === 'string' ? init.body : undefined });
+    return new Response(JSON.stringify(llmResponse(validEvaluation)), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    const repairContext: ExecutionContext = new Map([
+      ['prepare-context', [{ json: {
+        company_profile: { name: 'Test GmbH' },
+        bauort: 'München',
+        value_breakdown_note: '50% Eigenleistung',
+      } }]],
+    ]);
+    await httpRequestExecutor.execute(
+      repairNodes[0].config as Record<string, unknown>,
+      inspected[0],
+      repairContext,
+      { deadline: Date.now() + 5_000 },
+    );
+    assert.equal(requests.length, 1);
+    const request = JSON.parse(requests[0].body ?? '{}') as {
+      messages?: Array<{ content?: string }>;
+      temperature?: number;
+    };
+    assert.equal(request.temperature, 0);
+    assert.match(request.messages?.[1]?.content ?? '', /Quelle A/);
+    assert.match(request.messages?.[1]?.content ?? '', /must_cover_source_ids_exactly_once/);
+    assert.doesNotMatch(request.messages?.[1]?.content ?? '', /must never be copied/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalApiKey;
+  }
+});
 
 test('stage 3 explicitly selects coverage with the requirement inputs', () => {
   const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
