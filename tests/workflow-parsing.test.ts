@@ -572,7 +572,7 @@ test('stage 2 opts chunk classification into bounded per-item transport', () => 
   assert.equal(node.config.body_input_field, 'request_body');
 });
 
-test('stage 2 combines bounded chunk responses without losing source classifications', async () => {
+test('stage 2 combines bounded chunk responses and nested JSON fields without losing classifications', async () => {
   const positions = Array.from({ length: 121 }, (_, index) => ({
     id: `source-${index + 1}`,
     short_text: `Position ${index + 1}`,
@@ -590,21 +590,23 @@ test('stage 2 combines bounded chunk responses without losing source classificat
   ))[0];
   const responses = prepared.map((item, chunkIndex) => {
     const chunkPositions = item.json.positions as Array<{ id: string }>;
+    const classifications = chunkPositions.map(position => ({
+      id: position.id,
+      type: 'eigen',
+      reason: 'Typische Eigenleistung',
+    }));
+    const groups = [{
+      id: 'GROUP-001',
+      label: `Arbeitspaket ${chunkIndex + 1}`,
+      kind: 'semantic',
+      position_ids: chunkPositions.map(position => position.id),
+      distinguishing_attributes: ['Los 1'],
+      confidence: 0.9,
+      rationale: 'Zusammenhängendes Arbeitspaket innerhalb des Modell-Chunks.',
+    }];
     return { json: llmResponse({
-      classifications: chunkPositions.map(position => ({
-        id: position.id,
-        type: 'eigen',
-        reason: 'Typische Eigenleistung',
-      })),
-      groups: [{
-        id: 'GROUP-001',
-        label: `Arbeitspaket ${chunkIndex + 1}`,
-        kind: 'semantic',
-        position_ids: chunkPositions.map(position => position.id),
-        distinguishing_attributes: ['Los 1'],
-        confidence: 0.9,
-        rationale: 'Zusammenhängendes Arbeitspaket innerhalb des Modell-Chunks.',
-      }],
+      classifications: chunkIndex === 0 ? JSON.stringify(classifications) : classifications,
+      groups: chunkIndex === 0 ? JSON.stringify(groups) : groups,
     }) };
   });
   const context = new Map(baseContext);
