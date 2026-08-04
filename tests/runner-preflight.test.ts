@@ -362,6 +362,10 @@ test('failed Stage 1 records canonical durable failure after telemetry', async (
   assert.equal(execution?.value.tender_id, null);
   const completion = database.updates.find((entry) => entry.table === 'flow_executions');
   assert.equal('tender_id' in (completion?.value ?? {}), false);
+  const rootExecutionId = database.inserts
+    .find((entry) => entry.table === 'flow_executions')
+    ?.value.correlation_id;
+  assert.match(String(rootExecutionId), /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.deepEqual(database.rpcs.at(-1), {
     name: 'record_tender_processing_failure',
     parameters: {
@@ -369,9 +373,73 @@ test('failed Stage 1 records canonical durable failure after telemetry', async (
       p_org_id: orgId,
       p_processing_stage: 'stage1',
       p_processing_error_code: 'FLOW_STAGE_FAILED',
-      p_processing_correlation_id: 'tenderly-upload-opaque',
+      p_processing_correlation_id: rootExecutionId,
     },
   });
+});
+
+test('admitted opaque correlations use one generated UUID for admission, telemetry, and retryable failure', async () => {
+  const database = recordingClient();
+  const runner = new WorkflowRunner(database.client as never, (workflowId) => ({
+    id: workflowId,
+    name: 'Fail after admission',
+    nodes: [{
+      id: 'fail-after-admission',
+      name: 'Fail after admission',
+      type: 'unknown' as never,
+      config: {},
+    }],
+    edges: [],
+  }));
+
+  const result = await runner.run('tender-stage2-requirements', {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+  }, { correlationId: 'tenderly-upload-opaque' });
+
+  assert.equal(result.status, 'error');
+  const rootExecutionId = database.rpcs
+    .find((entry) => entry.name === 'claim_pipeline_admission')
+    ?.parameters.p_root_execution_id;
+  assert.match(String(rootExecutionId), /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(rootExecutionId, 'tenderly-upload-opaque');
+  assert.equal(
+    database.inserts.find((entry) => entry.table === 'flow_executions')?.value.correlation_id,
+    rootExecutionId,
+  );
+  assert.equal(
+    database.rpcs.find((entry) => entry.name === 'record_tender_processing_failure')
+      ?.parameters.p_processing_correlation_id,
+    rootExecutionId,
+  );
+});
+
+test('malformed retry roots fail before admission or workflow work', async () => {
+  let rpcCalls = 0;
+  let workflowLoads = 0;
+  const runner = new WorkflowRunner({
+    async rpc() {
+      rpcCalls += 1;
+      return { data: true, error: null };
+    },
+  } as never, (workflowId) => {
+    workflowLoads += 1;
+    return passthroughWorkflow(workflowId);
+  });
+
+  await assert.rejects(
+    runner.run('tender-stage2-requirements', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+    }, { retryRootExecutionId: 'opaque-not-a-uuid' }),
+    (error: unknown) => (error as { code?: string }).code === 'ADMISSION_UNAVAILABLE',
+  );
+  assert.equal(rpcCalls, 0);
+  assert.equal(workflowLoads, 0);
 });
 
 function passthroughWorkflow(workflowId: string): WorkflowDefinition {

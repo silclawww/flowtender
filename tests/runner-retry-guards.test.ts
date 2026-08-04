@@ -129,6 +129,7 @@ test('runner does not multiply the HTTP executor persistent-429 retry budget', a
       }));
       const result = await runStage3(runner, 1_000);
       assert.equal(result.status, 'error');
+      assert.equal(result.error_code, 'NODE_EXECUTION_FAILED');
     });
   } finally {
     console.log = originalLog;
@@ -158,6 +159,7 @@ test('runner does not retry a bounded HTTP timeout', async () => {
       }));
       const result = await runStage3(runner, 1_000);
       assert.equal(result.status, 'error');
+      assert.equal(result.error_code, 'NODE_EXECUTION_FAILED');
     });
   } finally {
     console.error = originalError;

@@ -66,13 +66,18 @@ function isReturnedRow(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function withAbortSignal<T>(query: T, signal?: AbortSignal): T {
+  if (!signal) return query;
+  return (query as T & { abortSignal(signal: AbortSignal): T }).abortSignal(signal);
+}
+
 // supabase.query — SELECT rows with optional filters
 // Config: { table: string, filters?: FilterCondition[], select?: string, single?: boolean }
 export function createSupabaseQueryExecutor(
   createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
 ): NodeExecutor {
   return {
-    async execute(config, input, context) {
+    async execute(config, input, context, runtime) {
       const table = evalTemplate(config.table as string, input, context) as string;
       const selectCols = (config.select as string) || '*';
       const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
@@ -86,7 +91,8 @@ export function createSupabaseQueryExecutor(
         const supabase = createClient();
         let query = supabase.from(table).select(selectCols);
         query = applyFilters(query, filters);
-        result = single ? await query.single() : await query;
+        const operation = withAbortSignal(single ? query.single() : query, runtime?.signal);
+        result = await operation;
       } catch {
         throw new Error('SUPABASE_QUERY_FAILED');
       }
@@ -116,7 +122,7 @@ export function createSupabaseUpsertExecutor(
   createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
 ): NodeExecutor {
   return {
-    async execute(config, input, context) {
+    async execute(config, input, context, runtime) {
       const table = evalTemplate(config.table as string, input, context) as string;
 
       let data: Record<string, unknown>;
@@ -137,10 +143,11 @@ export function createSupabaseUpsertExecutor(
       try {
         const supabase = createClient();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        mutation = await (supabase.from(table) as any)
+        const operation = (supabase.from(table) as any)
           .upsert(data, { onConflict: (config.on_conflict as string) || 'id' })
           .select()
           .single();
+        mutation = await withAbortSignal(operation, runtime?.signal);
       } catch {
         throw new Error('SUPABASE_UPSERT_FAILED');
       }
@@ -161,7 +168,7 @@ export function createSupabaseUpdateExecutor(
   createClient: () => ReturnType<typeof createServiceClient> = createServiceClient,
 ): NodeExecutor {
   return {
-    async execute(config, input, context) {
+    async execute(config, input, context, runtime) {
       const table = evalTemplate(config.table as string, input, context) as string;
       const filters = ((config.filters as FilterCondition[]) || []).map(f => ({
         ...f,
@@ -186,7 +193,7 @@ export function createSupabaseUpdateExecutor(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let query = (supabase.from(table) as any).update(data).select();
         query = applyFilters(query, filters);
-        mutation = await query;
+        mutation = await withAbortSignal(query, runtime?.signal);
       } catch {
         throw new Error('SUPABASE_UPDATE_FAILED');
       }

@@ -121,7 +121,10 @@ test('stage 1 PDF rejects a structurally valid no-text document before metadata 
   } finally {
     console.error = originalConsoleError;
   }
-  assert.deepEqual(logged, [['PDF_TEXT_UNAVAILABLE']]);
+  assert.deepEqual(
+    logged.filter(([value]) => typeof value !== 'string' || !value.includes('[DEP0180]')),
+    [['PDF_TEXT_UNAVAILABLE']],
+  );
 });
 
 test('stage 1 PDF fails closed when the metadata LLM returns invalid JSON', async () => {

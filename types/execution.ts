@@ -33,6 +33,7 @@ export type ExecutionContext = Map<string, ExecutionItem[]>;
 
 export interface ExecutionRuntime {
   deadline?: number;
+  signal?: AbortSignal;
 }
 
 export interface NodeExecutor {
