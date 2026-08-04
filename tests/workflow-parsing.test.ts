@@ -98,7 +98,7 @@ const validPdfMetadata = {
 };
 
 const validGaebMetadata = {
-  title: 'Kanalsanierung Ortsmitte, Bad Heilbrunn',
+  title: 'Sanierung der Lüftungsanlagen im Schulzentrum, Landkreis Rosenheim',
   buyer: 'Gemeinde Bad Heilbrunn',
   region: 'Bad Heilbrunn',
   deadline: '2026-10-15',
@@ -190,7 +190,7 @@ test('stage 1 GAEB rejects malformed metadata schemas', async () => {
     { choices: [{ message: { content: JSON.stringify([]) } }] },
     { choices: [{ message: { content: JSON.stringify({ ...validGaebMetadata, buyer: ['Gemeinde'] }) } }] },
     { choices: [{ message: { content: JSON.stringify({ ...validGaebMetadata, deadline: '2026-02-30' }) } }] },
-    { choices: [{ message: { content: JSON.stringify({ ...validGaebMetadata, title: 'x'.repeat(61) }) } }] },
+    { choices: [{ message: { content: JSON.stringify({ ...validGaebMetadata, title: 'x'.repeat(201) }) } }] },
   ];
 
   for (const response of responses) {
@@ -199,6 +199,7 @@ test('stage 1 GAEB rejects malformed metadata schemas', async () => {
 });
 
 test('stage 1 GAEB preserves valid metadata and structural fields', async () => {
+  assert.ok(validGaebMetadata.title.length > 60);
   const normalised = {
     id: 'gaeb-tender-id',
     org_id: 'org-id',
