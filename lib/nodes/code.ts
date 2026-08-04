@@ -8,6 +8,7 @@ import * as pdfParse from 'pdf-parse';
 import { getPath as getPdfWorkerPath } from 'pdf-parse/worker';
 
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+import { runSynchronous } from './synchronous.ts';
 
 pdfParse.PDFParse.setWorker(getPdfWorkerPath());
 
@@ -21,7 +22,7 @@ const ALLOWED_MODULES = new Map<string, object>([
 ]);
 
 export const codeExecutor: NodeExecutor = {
-  async execute(config, input, context) {
+  async execute(config, input, context, runtime) {
     const code = config.code as string;
     if (!code) return [[...input]]; // passthrough if no code
     
@@ -46,14 +47,40 @@ export const codeExecutor: NodeExecutor = {
       return loadedModule;
     };
     
+    const deadlineFetch: typeof fetch = (resource, init) => {
+      const signals = [init?.signal, runtime?.signal]
+        .filter((signal): signal is AbortSignal => Boolean(signal));
+      return fetch(resource, {
+        ...init,
+        signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+      });
+    };
+
     try {
-      // Wrap code in async function and execute
-      // eslint-disable-next-line no-new-func
-      const fn = new Function(
-        '$input', '$json', '$', 'require', 'JSON',
-        `return (async () => { ${code} })()`
-      );
-      const result = await fn($input, $json, $nodeRef, safeRequire, JSON);
+      const result = structuredClone(await runSynchronous<Promise<unknown>>(
+        `(async () => { ${code}\n})()`,
+        {
+          $input,
+          $json,
+          $: $nodeRef,
+          require: safeRequire,
+          JSON,
+          Buffer,
+          fetch: deadlineFetch,
+          AbortController,
+          AbortSignal,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          console,
+          URL,
+          URLSearchParams,
+          TextEncoder,
+          TextDecoder,
+        },
+        runtime,
+      ));
       
       // Normalize result to ExecutionItem[][]
       if (!result) return [[{ json: $json }]];
@@ -70,6 +97,7 @@ export const codeExecutor: NodeExecutor = {
       }
       return [[{ json: result as Record<string, unknown> }]];
     } catch (err) {
+      if (err instanceof Error && err.name === 'WorkflowDeadlineError') throw err;
       const error = err instanceof Error ? err.message : String(err);
       throw new Error(`Code node execution error: ${error}`);
     }

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { WorkflowRunner } from '../lib/runner/runner.ts';
@@ -123,6 +126,39 @@ test('actual runner bounds a never-settling code node at the workflow deadline',
   }));
 
   assertRedactedTimeout(database, result);
+});
+
+test('actual runner interrupts synchronous code at the workflow deadline', async () => {
+  const { database, result } = await withMutedErrors(() => runWithDeadline('code', {
+    code: 'while (true) {}',
+  }));
+
+  assertRedactedTimeout(database, result);
+});
+
+test('actual runner interrupts a synchronous GAEB parser at the workflow deadline', async () => {
+  const originalCwd = process.cwd();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'flowtender-gaeb-deadline-'));
+  const app = path.join(root, 'flowtender');
+  const parserDir = path.join(root, 'tenderly-agent', 'lib');
+  fs.mkdirSync(app, { recursive: true });
+  fs.mkdirSync(parserDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(parserDir, 'gaeb-parser-n8n.js'),
+    'exports.parseGaebFile = function () { while (true) {} };\n',
+  );
+  process.chdir(app);
+
+  try {
+    const { database, result } = await withMutedErrors(() => runWithDeadline('gaeb_parse', {
+      file_data_field: 'tender_id',
+      file_name_field: 'org_id',
+    }));
+    assertRedactedTimeout(database, result);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('runner consumes a code node rejection that arrives after its deadline', async () => {
