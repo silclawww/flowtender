@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { validate as isUuid, v4 as uuidv4 } from 'uuid';
 import { loadWorkflow } from './loader.ts';
 import { codeExecutor } from '../nodes/code.ts';
 import { httpRequestExecutor } from '../nodes/http-request.ts';
@@ -23,7 +23,11 @@ import {
   materializeWorkflowPayload,
   preflightWorkflowPayload,
 } from '../tenant-context.ts';
-import { claimPipelineAdmission, releasePipelineAdmission } from '../admission-control.ts';
+import {
+  AdmissionControlError,
+  claimPipelineAdmission,
+  releasePipelineAdmission,
+} from '../admission-control.ts';
 import {
   isNonRetryableError,
   WorkflowDeadlineError,
@@ -134,10 +138,13 @@ export class WorkflowRunner {
     const executionId = uuidv4();
     const startTime = Date.now();
     const { synchronous = true, timeoutMs = 120000 } = options;
-    const correlationId = normalizeCorrelationId(
-      options.retryRootExecutionId ?? options.correlationId,
-      executionId,
-    );
+    if (options.retryRootExecutionId && !isUuid(options.retryRootExecutionId)) {
+      throw new AdmissionControlError(503, 'ADMISSION_UNAVAILABLE');
+    }
+    const rootExecutionId = options.retryRootExecutionId?.toLowerCase() ?? executionId;
+    const correlationId = preflight.trustedContext || options.retryRootExecutionId
+      ? rootExecutionId
+      : normalizeCorrelationId(options.correlationId, executionId);
 
     let receiverOwnedLease: string | null = null;
     if (preflight.trustedContext) {
@@ -148,7 +155,7 @@ export class WorkflowRunner {
         operation: options.retryRootExecutionId
           ? 'retry'
           : preflight.trustedContext.operation,
-        rootExecutionId: correlationId,
+        rootExecutionId,
       });
       if (preflight.trustedContext.operation !== 'upload') {
         receiverOwnedLease = preflight.trustedContext.admission_id;
