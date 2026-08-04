@@ -771,7 +771,7 @@ test('stage 3 forces review for truncated, saturated, missing, or malformed cove
   }
 });
 
-test('stage 3 rejects contradictory raw recommendations before applying a coverage override', async () => {
+test('stage 3 derives recommendation policy before applying a coverage override', async () => {
   const context: ExecutionContext = new Map([
     ['load-requirements', [{ json: {
       id: 'tender-id',
@@ -779,12 +779,12 @@ test('stage 3 rejects contradictory raw recommendations before applying a covera
       requirements_coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
     } }]],
   ]);
-  await assertLlmResponseFailsSafely(
-    'tender-stage3-evaluation.json',
-    'parse-evaluation',
-    llmResponse({ ...validEvaluation, strategic_fit_score: 70, bid_recommendation: 'needs_review' }),
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse({ ...validEvaluation, strategic_fit_score: 70, bid_recommendation: 'needs_review' }) }],
     context,
   );
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
 });
 
 test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates', async () => {
@@ -800,8 +800,6 @@ test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates',
     { ...validEvaluation, bid_recommendation: 'bid' },
     { ...validEvaluation, rationale: 'x'.repeat(5_001) },
     { ...validEvaluation, strengths: Array.from({ length: 21 }, () => 'Stärke') },
-    { ...validEvaluation, eligibility_summary: { ...validEvaluation.eligibility_summary, compliant_count: 2 } },
-    { ...validEvaluation, eligibility_summary: { ...validEvaluation.eligibility_summary, blocking_issues: 1 } },
     {
       ...validEvaluation,
       eligibility_requirements: Array.from({ length: 26 }, (_, index) => ({
@@ -922,7 +920,7 @@ test('stage 3 marks an empty requirement extraction for manual review', async ()
   assert.equal(result[0][0].json.processing_status, 'complete');
 });
 
-test('stage 3 rejects an unqualified recommendation when critical eligibility is unresolved', async () => {
+test('stage 3 derives conservative recommendations when critical eligibility is unresolved', async () => {
   const criticalContext: ExecutionContext = new Map([
     ['load-requirements', [{ json: {
       id: 'tender-id',
@@ -966,21 +964,21 @@ test('stage 3 rejects an unqualified recommendation when critical eligibility is
     ],
   };
 
-  await assertLlmResponseFailsSafely(
-    'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(emptyRecommendation), emptyContext,
-  );
-  for (const evaluation of [criticalPartial, hiddenBlocker, ignoredBlocker]) {
-    await assertLlmResponseFailsSafely(
-      'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(evaluation), criticalContext,
+  for (const [evaluation, context, recommendation] of [
+    [emptyRecommendation, emptyContext, 'needs_review'],
+    [criticalPartial, criticalContext, 'needs_review'],
+    [ignoredBlocker, criticalContext, 'recommend_no_bid'],
+  ] as const) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(evaluation) }],
+      context,
     );
+    assert.equal(result[0][0].json.bid_recommendation, recommendation);
   }
-
-  const result = await codeExecutor.execute(
-    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
-    [{ json: llmResponse({ ...criticalPartial, bid_recommendation: 'needs_review' }) }],
-    criticalContext,
+  await assertLlmResponseFailsSafely(
+    'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(hiddenBlocker), criticalContext,
   );
-  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
 });
 
 test('stage 3 requires no-bid for blockers regardless of score or coverage override', async () => {
@@ -1002,16 +1000,16 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
     [60, 'needs_review'],
     [70, 'recommend_bid'],
   ] as const) {
-    await assertLlmResponseFailsSafely(
-      'tender-stage3-evaluation.json',
-      'parse-evaluation',
-      llmResponse({
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse({
         ...blockingEvaluation,
         strategic_fit_score: score,
         bid_recommendation: recommendation,
-      }),
+      }) }],
       stage3Context(),
     );
+    assert.equal(result[0][0].json.bid_recommendation, 'recommend_no_bid');
   }
 
   const incompleteCoverageContext: ExecutionContext = new Map([
@@ -1021,16 +1019,16 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
       requirements_coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
     } }]],
   ]);
-  await assertLlmResponseFailsSafely(
-    'tender-stage3-evaluation.json',
-    'parse-evaluation',
-    llmResponse({
+  const incompleteResult = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse({
       ...blockingEvaluation,
       strategic_fit_score: 70,
       bid_recommendation: 'recommend_bid',
-    }),
+    }) }],
     incompleteCoverageContext,
   );
+  assert.equal(incompleteResult[0][0].json.bid_recommendation, 'recommend_no_bid');
 
   for (const score of [60, 70]) {
     const result = await codeExecutor.execute(
@@ -1080,19 +1078,25 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
   }
 });
 
-test('stage 3 rejects score and recommendation contradictions', async () => {
-  for (const evaluation of [
-    { ...validEvaluation, strategic_fit_score: 49, bid_recommendation: 'recommend_bid' },
-    { ...validEvaluation, strategic_fit_score: 50, bid_recommendation: 'recommend_no_bid' },
-    { ...validEvaluation, strategic_fit_score: 69, bid_recommendation: 'recommend_bid' },
-    { ...validEvaluation, strategic_fit_score: 70, bid_recommendation: 'needs_review' },
-  ]) {
-    await assertLlmResponseFailsSafely(
-      'tender-stage3-evaluation.json',
-      'parse-evaluation',
-      llmResponse(evaluation),
+test('stage 3 derives score recommendations and aggregate counts deterministically', async () => {
+  for (const [score, rawRecommendation, expectedRecommendation] of [
+    [49, 'recommend_bid', 'recommend_no_bid'],
+    [50, 'recommend_no_bid', 'needs_review'],
+    [69, 'recommend_bid', 'needs_review'],
+    [70, 'needs_review', 'recommend_bid'],
+  ] as const) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse({
+        ...validEvaluation,
+        strategic_fit_score: score,
+        bid_recommendation: rawRecommendation,
+        eligibility_summary: { compliant_count: 0, partial_count: 0, not_met_count: 2, blocking_issues: 0 },
+      }) }],
       stage3Context(),
     );
+    assert.equal(result[0][0].json.bid_recommendation, expectedRecommendation);
+    assert.deepEqual(result[0][0].json.eligibility_summary, validEvaluation.eligibility_summary);
   }
 });
 
