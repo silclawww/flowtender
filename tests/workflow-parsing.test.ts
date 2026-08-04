@@ -87,6 +87,42 @@ function textlessPdf(): Buffer {
   return Buffer.from(parts.join(''), 'ascii');
 }
 
+test('Stage 3 geocoding falls back to the company postal code when the exact locality is unknown', async () => {
+  const originalFetch = globalThis.fetch;
+  const queries: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    const query = url.searchParams.get('q') ?? '';
+    queries.push(query);
+    const match = query === '83661, Deutschland'
+      ? [{ lat: '47.682', lon: '11.574', display_name: '83661 Lenggries' }]
+      : query === 'München, Deutschland'
+        ? [{ lat: '48.137', lon: '11.576', display_name: 'München' }]
+        : [];
+    return new Response(JSON.stringify(match), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'geocode-distance') },
+      [{ json: {
+        company_profile: { hq_postal_code: '83661', hq_city: 'Lenggries-Schlegldorf' },
+        bauort: 'München',
+      } }],
+      new Map(),
+    );
+    assert.deepEqual(queries, [
+      '83661 Lenggries-Schlegldorf, Deutschland',
+      'München, Deutschland',
+      '83661, Deutschland',
+    ]);
+    assert.equal(typeof result[0]?.[0]?.json.distance_km, 'number');
+    assert.match(String(result[0]?.[0]?.json.distance_note), /Luftlinie/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 const validPdfMetadata = {
   title: 'Brückensanierung Augsburg',
   summary: 'Die Ausschreibung umfasst die Sanierung einer Straßenbrücke.',
