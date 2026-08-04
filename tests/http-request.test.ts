@@ -99,6 +99,31 @@ test('HTTP requests reject oversized item batches before contacting the provider
   assert.equal(calls, 0);
 });
 
+test('HTTP requests serialize a bounded body object from each input item', async () => {
+  const requestBodies: string[] = [];
+
+  await withFetch(async (_url, init) => {
+    requestBodies.push(String(init?.body));
+    return Response.json({ ok: true });
+  }, async () => {
+    await httpRequestExecutor.execute(
+      {
+        ...config,
+        body_input_field: 'request_body',
+        process_each_item: true,
+        timeout_ms: 1_000,
+      },
+      [
+        { json: { request_body: { chunk: 1 } } },
+        { json: { request_body: { chunk: 2 } } },
+      ],
+      new Map(),
+    );
+  });
+
+  assert.deepEqual(requestBodies, ['{"chunk":1}', '{"chunk":2}']);
+});
+
 test('HTTP requests retain first-item-only behavior unless batching is explicit', async () => {
   const requestBodies: string[] = [];
 

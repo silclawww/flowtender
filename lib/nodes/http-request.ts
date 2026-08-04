@@ -85,7 +85,14 @@ async function executeRequest(
 
     // Body
     let body: string | undefined;
-    if (method !== 'GET' && config.body) {
+    if (method !== 'GET' && typeof config.body_input_field === 'string') {
+      const inputBody = $json[config.body_input_field];
+      if (inputBody === null || typeof inputBody !== 'object' || Array.isArray(inputBody)) {
+        throw new NonRetryableError('HTTP input body unavailable');
+      }
+      body = JSON.stringify(inputBody);
+      if (body.length > 1_000_000) throw new NonRetryableError('HTTP input body too large');
+    } else if (method !== 'GET' && config.body) {
       body = evalTemplate(config.body as string, $inputHelper, $json, context);
     }
 
