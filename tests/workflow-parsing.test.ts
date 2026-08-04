@@ -366,10 +366,9 @@ test('stage 2 distinguishes source truncation from the exact requirement output 
 
 test('stage 2 rejects malformed requirement schemas', async () => {
   const invalidRequirements: unknown[] = [
-    { requirements: [validRequirement] },
     Array.from({ length: 26 }, (_, index) => ({ ...validRequirement, id: `REQ-${index + 1}` })),
     [{ ...validRequirement, category: 'Leistungsposition' }],
-    [{ ...validRequirement, title: 'x'.repeat(61) }],
+    [{ ...validRequirement, title: 'x'.repeat(201) }],
     [{ ...validRequirement, is_critical: 'true' }],
     [{ ...validRequirement, source_fragments: ['x'.repeat(2_001)] }],
     [validRequirement, { ...validRequirement }],
@@ -415,6 +414,32 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
   } }]]);
 });
 
+test('stage 2 normalizes harmless requirement representation differences', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse({ requirements: [{
+      ...validRequirement,
+      title: 'x'.repeat(120),
+      source_fragments: validRequirement.source_fragments[0],
+      confidence: 0.97,
+    }] }) }],
+    new Map([['prepare-extraction-text', [{ json: {
+      requirements_coverage: {
+        source_insufficient: false,
+        source_truncated: false,
+        source_char_count: 5_000,
+        extracted_char_count: 5_000,
+        source_char_limit: 12_000,
+      },
+    } }]]]),
+  );
+
+  assert.deepEqual(result[0][0].json.requirements, [{
+    ...validRequirement,
+    title: 'x'.repeat(120),
+  }]);
+});
+
 test('stage 2 fails closed when workload classification JSON is invalid', async () => {
   const context: ExecutionContext = new Map([
     ['load-tender', [{ json: { gaeb_positions: [{ id: 'position-1' }] } }]],
@@ -450,8 +475,7 @@ test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload cla
     [validWorkload[0], { ...validWorkload[0] }],
     [validWorkload[0], { ...validWorkload[1], id: 'unknown-position' }],
     [validWorkload[0], { ...validWorkload[1], type: 'subcontracted' }],
-    [validWorkload[0], { ...validWorkload[1], reason: 'x'.repeat(201) }],
-    [validWorkload[0], { ...validWorkload[1], reason: 'eins zwei drei vier fünf sechs sieben acht neun zehn elf' }],
+    [validWorkload[0], { ...validWorkload[1], reason: 'x'.repeat(501) }],
     { positions: validWorkload, items: validWorkload },
   ];
 
@@ -492,6 +516,32 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
     classified_at: (output.value_breakdown as { classified_at: string }).classified_at,
   });
   assert.match((output.value_breakdown as { classified_at: string }).classified_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('stage 2 workload parsing ignores safe extras and prompt-only reason length differences', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const longReason = 'eins zwei drei vier fünf sechs sieben acht neun zehn elf';
+  const response = llmResponse({
+    positions: [
+      { ...validWorkload[0], confidence: 0.98 },
+      { ...validWorkload[1], reason: longReason, confidence: 0.91 },
+    ],
+    model_note: 'safe redundant field',
+  });
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: response }],
+    context,
+  );
+  const positions = (result[0][0].json.value_breakdown as {
+    positions: Array<{ reason: string; confidence?: number }>;
+  }).positions;
+
+  assert.equal(positions[1].reason, longReason);
+  assert.equal('confidence' in positions[0], false);
 });
 
 test('stage 2 records complete and first-120-sample coverage at the paid-work boundary', async () => {
@@ -787,7 +837,7 @@ test('stage 3 derives recommendation policy before applying a coverage override'
   assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
 });
 
-test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates', async () => {
+test('stage 3 rejects unsafe evaluation schemas while ignoring redundant aggregates', async () => {
   const matchingDuplicateSummary = {
     compliant_count: 2,
     partial_count: 0,
@@ -797,7 +847,6 @@ test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates',
   const invalidEvaluations: unknown[] = [
     { ...validEvaluation, strategic_fit_score: 82.5 },
     { ...validEvaluation, strategic_fit_score: 101 },
-    { ...validEvaluation, bid_recommendation: 'bid' },
     { ...validEvaluation, rationale: 'x'.repeat(5_001) },
     { ...validEvaluation, strengths: Array.from({ length: 21 }, () => 'Stärke') },
     {
@@ -820,7 +869,6 @@ test('stage 3 rejects malformed evaluation schemas and inconsistent aggregates',
         { ...validEvaluation.eligibility_requirements[1], id: 'REQ-UNKNOWN' },
       ],
     },
-    { ...validEvaluation, risks: validEvaluation.risks.slice(0, 2) },
     {
       ...validEvaluation,
       risks: validEvaluation.risks.map((risk, index) => index === 0 ? { ...risk, severity: 'critical' } : risk),
@@ -976,8 +1024,15 @@ test('stage 3 derives conservative recommendations when critical eligibility is 
     );
     assert.equal(result[0][0].json.bid_recommendation, recommendation);
   }
-  await assertLlmResponseFailsSafely(
-    'tender-stage3-evaluation.json', 'parse-evaluation', llmResponse(hiddenBlocker), criticalContext,
+  const hiddenBlockerResult = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(hiddenBlocker) }],
+    criticalContext,
+  );
+  assert.equal(hiddenBlockerResult[0][0].json.bid_recommendation, 'recommend_no_bid');
+  assert.equal(
+    (hiddenBlockerResult[0][0].json.eligibility_requirements as Array<{ is_blocking: boolean }>)[0].is_blocking,
+    true,
   );
 });
 
@@ -1098,6 +1153,37 @@ test('stage 3 derives score recommendations and aggregate counts deterministical
     assert.equal(result[0][0].json.bid_recommendation, expectedRecommendation);
     assert.deepEqual(result[0][0].json.eligibility_summary, validEvaluation.eligibility_summary);
   }
+});
+
+test('stage 3 ignores redundant fields and normalizes harmless model variation', async () => {
+  const variableEvaluation = {
+    strategic_fit_score: 70,
+    rationale: validEvaluation.rationale,
+    eligibility_requirements: validEvaluation.eligibility_requirements.map((requirement) => ({
+      ...requirement,
+      confidence: 0.95,
+    })),
+    strengths: JSON.stringify(validEvaluation.strengths),
+    risks: validEvaluation.risks.slice(0, 2).map((risk, index) => ({
+      ...risk,
+      title: index === 0 ? 'x'.repeat(120) : risk.title,
+      confidence: 0.9,
+    })),
+    extra_explanation: 'harmless redundant field',
+  };
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(variableEvaluation) }],
+    stage3Context(),
+  );
+
+  assert.equal(result[0][0].json.bid_recommendation, 'recommend_bid');
+  assert.deepEqual(result[0][0].json.eligibility_summary, validEvaluation.eligibility_summary);
+  assert.deepEqual(result[0][0].json.eligibility_requirements, validEvaluation.eligibility_requirements);
+  assert.equal((result[0][0].json.risks as Array<{ title: string }>)[0].title.length, 120);
+  assert.deepEqual(result[0][0].json.clarifications, []);
+  assert.equal('extra_explanation' in result[0][0].json, false);
 });
 
 test('stage 3 accepts the exact score and recommendation boundaries', async () => {
