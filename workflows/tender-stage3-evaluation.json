@@ -115,6 +115,38 @@
       }
     },
     {
+      "id": "inspect-repaired-evaluation",
+      "type": "code",
+      "name": "Inspect Repaired Evaluation",
+      "config": {
+        "code": "const tender = $('load-requirements').first().json;\nconst isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);\nconst isBoundedString = (value, maxLength) =>\n  typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;\nconst findings = [];\nconst addFinding = (path, problem, details) => findings.push({\n  path,\n  problem,\n  ...(details === undefined ? {} : { details }),\n});\nconst failUnsafe = () => {\n  console.error('LLM_RESPONSE_INVALID_JSON');\n  throw new Error('LLM_RESPONSE_INVALID_JSON');\n};\nconst parseNested = (value, path) => {\n  if (typeof value !== 'string') return value;\n  try {\n    return JSON.parse(value);\n  } catch {\n    addFinding(path, 'must_be_valid_json_or_native_json');\n    return undefined;\n  }\n};\n\nlet candidate;\ntry {\n  const content = $json.choices?.[0]?.message?.content;\n  candidate = typeof content === 'string'\n    ? JSON.parse(content.replace(/\\x60\\x60\\x60json|\\x60\\x60\\x60/g, '').trim())\n    : content;\n} catch {\n  failUnsafe();\n}\nif (!isObject(candidate)) failUnsafe();\n\nconst candidateKeys = [\n  'strategic_fit_score',\n  'rationale',\n  'strengths',\n  'eligibility_requirements',\n  'risks',\n  'clarifications',\n];\nconst repairCandidate = Object.fromEntries(\n  candidateKeys\n    .filter((key) => Object.prototype.hasOwnProperty.call(candidate, key))\n    .map((key) => [key, candidate[key]]),\n);\nif (JSON.stringify(repairCandidate).length > 40_000) failUnsafe();\n\nif (!Number.isInteger(candidate.strategic_fit_score)\n  || candidate.strategic_fit_score < 0\n  || candidate.strategic_fit_score > 100) {\n  addFinding('strategic_fit_score', 'must_be_integer_0_to_100');\n}\nif (!isBoundedString(candidate.rationale, 5000)) {\n  addFinding('rationale', 'must_be_nonempty_string_max_5000');\n}\n\nconst strengths = candidate.strengths == null\n  ? []\n  : parseNested(candidate.strengths, 'strengths');\nif (!Array.isArray(strengths)\n  || strengths.length > 20\n  || !strengths.every((item) => isBoundedString(item, 500))) {\n  addFinding('strengths', 'must_be_array_of_up_to_20_strings_max_500');\n}\n\nconst sourceRequirements = Array.isArray(tender.requirements) ? tender.requirements : [];\nconst sourceIds = sourceRequirements\n  .map((requirement) => requirement?.id)\n  .filter((id) => isBoundedString(id, 100));\nconst knownIds = new Set(sourceIds);\nif (sourceIds.length !== sourceRequirements.length || knownIds.size !== sourceIds.length) failUnsafe();\nconst repairSourceRequirements = sourceRequirements.map((requirement) => ({\n  id: requirement.id,\n  category: requirement.category,\n  title: requirement.title,\n  description: requirement.description,\n  is_critical: requirement.is_critical,\n  is_implicit: requirement.is_implicit,\n  source_fragments: requirement.source_fragments,\n}));\nif (JSON.stringify(repairSourceRequirements).length > 40_000) failUnsafe();\n\nconst eligibility = parseNested(candidate.eligibility_requirements, 'eligibility_requirements');\nif (!Array.isArray(eligibility) || eligibility.length > 25) {\n  addFinding('eligibility_requirements', 'must_be_array_with_one_item_per_source_requirement');\n} else {\n  const seen = new Set();\n  const unknownIds = [];\n  const duplicateIds = [];\n  for (const [index, requirement] of eligibility.entries()) {\n    const path = 'eligibility_requirements[' + index + ']';\n    if (!isObject(requirement)) {\n      addFinding(path, 'must_be_object');\n      continue;\n    }\n    if (!isBoundedString(requirement.id, 100) || !knownIds.has(requirement.id)) {\n      unknownIds.push(typeof requirement.id === 'string' ? requirement.id.slice(0, 100) : null);\n    } else if (seen.has(requirement.id)) {\n      duplicateIds.push(requirement.id);\n    } else {\n      seen.add(requirement.id);\n    }\n    if (!['compliant', 'partial', 'not_met'].includes(requirement.status)) {\n      addFinding(path + '.status', 'must_be_compliant_partial_or_not_met');\n    }\n    if (typeof requirement.is_blocking !== 'boolean') {\n      addFinding(path + '.is_blocking', 'must_be_boolean');\n    }\n  }\n  const missingIds = sourceIds.filter((id) => !seen.has(id));\n  if (eligibility.length !== sourceIds.length || unknownIds.length || duplicateIds.length || missingIds.length) {\n    addFinding('eligibility_requirements', 'must_cover_source_ids_exactly_once', {\n      missing_ids: missingIds,\n      unknown_ids: unknownIds,\n      duplicate_ids: duplicateIds,\n    });\n  }\n}\n\nconst risks = candidate.risks == null ? [] : parseNested(candidate.risks, 'risks');\nif (!Array.isArray(risks) || risks.length > 8) {\n  addFinding('risks', 'must_be_array_of_up_to_8_items');\n} else {\n  const ids = new Set();\n  for (const [index, risk] of risks.entries()) {\n    const path = 'risks[' + index + ']';\n    if (!isObject(risk)\n      || !isBoundedString(risk.id, 100)\n      || ids.has(risk.id)\n      || !isBoundedString(risk.title, 200)\n      || !isBoundedString(risk.text, 2000)\n      || !['low', 'medium', 'high'].includes(risk.severity)\n      || !isBoundedString(risk.mitigation, 2000)) {\n      addFinding(path, 'must_match_risk_schema_with_unique_id');\n    } else {\n      ids.add(risk.id);\n    }\n  }\n}\n\nconst clarifications = candidate.clarifications == null\n  ? []\n  : parseNested(candidate.clarifications, 'clarifications');\nif (!Array.isArray(clarifications) || clarifications.length > 8) {\n  addFinding('clarifications', 'must_be_array_of_up_to_8_items');\n} else {\n  const ids = new Set();\n  for (const [index, clarification] of clarifications.entries()) {\n    const path = 'clarifications[' + index + ']';\n    if (!isObject(clarification)\n      || !isBoundedString(clarification.id, 100)\n      || ids.has(clarification.id)\n      || !isBoundedString(clarification.question, 2000)\n      || !['medium', 'high'].includes(clarification.priority)) {\n      addFinding(path, 'must_match_clarification_schema_with_unique_id');\n    } else {\n      ids.add(clarification.id);\n    }\n  }\n}\n\nreturn [{ json: {\n  ...$json,\n  reconciliation_required: findings.length > 0,\n  reconciliation_findings: findings,\n  reconciliation_candidate: repairCandidate,\n  reconciliation_source_requirements: repairSourceRequirements,\n} }];"
+      }
+    },
+    {
+      "id": "route-repaired-evaluation",
+      "type": "if",
+      "name": "Repair Still Needs Review?",
+      "config": {
+        "condition": "$json.reconciliation_required === true"
+      }
+    },
+    {
+      "id": "build-review-fallback",
+      "type": "code",
+      "name": "Preserve Valid Evaluation for Review",
+      "config": {
+        "code": "const tender = $('load-requirements').first().json;\nconst initial = $('inspect-evaluation').first().json.reconciliation_candidate || {};\nconst repaired = $json.reconciliation_candidate || {};\nconst sources = Array.isArray($json.reconciliation_source_requirements)\n  ? $json.reconciliation_source_requirements\n  : (Array.isArray(tender.requirements) ? tender.requirements : []);\nconst isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);\nconst isBoundedString = (value, maxLength) =>\n  typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;\nconst parseNested = (value) => {\n  if (typeof value !== 'string') return value;\n  try { return JSON.parse(value); } catch { return undefined; }\n};\n\nconst sourceById = new Map();\nfor (const source of sources) {\n  if (!isObject(source) || !isBoundedString(source.id, 100) || sourceById.has(source.id)) {\n    console.error('LLM_RESPONSE_INVALID_JSON');\n    throw new Error('LLM_RESPONSE_INVALID_JSON');\n  }\n  sourceById.set(source.id, source);\n}\n\nconst validRequirementMap = (candidate) => {\n  const items = parseNested(candidate?.eligibility_requirements);\n  if (!Array.isArray(items) || items.length > 25) return new Map();\n  const counts = new Map();\n  for (const item of items) {\n    if (isObject(item) && isBoundedString(item.id, 100)) {\n      counts.set(item.id, (counts.get(item.id) || 0) + 1);\n    }\n  }\n  const valid = new Map();\n  for (const item of items) {\n    if (!isObject(item)\n      || counts.get(item.id) !== 1\n      || !sourceById.has(item.id)\n      || !['compliant', 'partial', 'not_met'].includes(item.status)\n      || typeof item.is_blocking !== 'boolean') continue;\n    const source = sourceById.get(item.id);\n    valid.set(item.id, {\n      id: item.id,\n      status: item.status,\n      is_blocking: item.is_blocking || (source?.is_critical === true && item.status === 'not_met'),\n    });\n  }\n  return valid;\n};\n\nconst initialRequirements = validRequirementMap(initial);\nconst repairedRequirements = validRequirementMap(repaired);\nconst reviewReason = 'Modellbewertung blieb nach einer Reparatur uneindeutig.';\nconst eligibilityRequirements = sources.map((source) =>\n  repairedRequirements.get(source.id)\n    || initialRequirements.get(source.id)\n    || { id: source.id, status: 'needs_review', is_blocking: false, review_reason: reviewReason });\n\nconst counts = { compliant: 0, partial: 0, not_met: 0, needs_review: 0, blocking: 0 };\nfor (const requirement of eligibilityRequirements) {\n  counts[requirement.status]++;\n  if (requirement.is_blocking) counts.blocking++;\n}\n\nconst validScore = (candidate) => Number.isInteger(candidate?.strategic_fit_score)\n  && candidate.strategic_fit_score >= 0\n  && candidate.strategic_fit_score <= 100\n    ? candidate.strategic_fit_score\n    : null;\nconst chooseString = (key, maxLength, fallback) =>\n  isBoundedString(repaired?.[key], maxLength) ? repaired[key]\n    : isBoundedString(initial?.[key], maxLength) ? initial[key] : fallback;\nconst chooseStringArray = (key, maxItems, maxLength) => {\n  for (const candidate of [repaired, initial]) {\n    const value = parseNested(candidate?.[key]);\n    if (Array.isArray(value)\n      && value.length <= maxItems\n      && value.every((item) => isBoundedString(item, maxLength))) return value;\n  }\n  return [];\n};\nconst chooseObjectArray = (key, maxItems, validator, allowedKeys) => {\n  for (const candidate of [repaired, initial]) {\n    const value = parseNested(candidate?.[key]);\n    if (!Array.isArray(value) || value.length > maxItems || !value.every(validator)) continue;\n    if (new Set(value.map((item) => item.id)).size !== value.length) continue;\n    return value.map((item) => Object.fromEntries(allowedKeys.map((field) => [field, item[field]])));\n  }\n  return [];\n};\nconst risks = chooseObjectArray('risks', 8, (risk) =>\n  isObject(risk)\n    && isBoundedString(risk.id, 100)\n    && isBoundedString(risk.title, 200)\n    && isBoundedString(risk.text, 2000)\n    && ['low', 'medium', 'high'].includes(risk.severity)\n    && isBoundedString(risk.mitigation, 2000),\n['id', 'title', 'text', 'severity', 'mitigation']);\nconst clarifications = chooseObjectArray('clarifications', 8, (clarification) =>\n  isObject(clarification)\n    && isBoundedString(clarification.id, 100)\n    && isBoundedString(clarification.question, 2000)\n    && ['medium', 'high'].includes(clarification.priority),\n['id', 'question', 'priority']);\n\nreturn [{ json: {\n  id: tender.id,\n  strategic_fit_score: validScore(repaired) ?? validScore(initial),\n  bid_recommendation: counts.blocking > 0 ? 'recommend_no_bid' : 'needs_review',\n  rationale: chooseString(\n    'rationale',\n    5000,\n    'Die Modellbewertung konnte nicht vollständig aufgelöst werden. Die markierten Anforderungen müssen manuell geprüft werden.',\n  ),\n  strengths: chooseStringArray('strengths', 20, 500),\n  eligibility_summary: {\n    compliant_count: counts.compliant,\n    partial_count: counts.partial,\n    not_met_count: counts.not_met,\n    needs_review_count: counts.needs_review,\n    blocking_issues: counts.blocking,\n  },\n  eligibility_requirements: eligibilityRequirements,\n  risks,\n  clarifications,\n  processing_status: 'complete',\n  distance_km: $('geocode-distance').first().json.distance_km ?? null,\n  distance_note: $('geocode-distance').first().json.distance_note ?? null,\n} }];"
+      }
+    },
+    {
+      "id": "finalize-evaluation",
+      "type": "code",
+      "name": "Finalize Evaluation",
+      "config": {
+        "code": "return [{ json: $json }];"
+      }
+    },
+    {
       "id": "parse-evaluation",
       "type": "code",
       "name": "Parse Evaluation",
@@ -160,7 +192,7 @@
       "type": "code",
       "name": "Build Stage 3 Response",
       "config": {
-        "code": "const eval_data = $('parse-evaluation').first().json;\nreturn [{ json: {\n  id: eval_data.id,\n  strategic_fit_score: eval_data.strategic_fit_score,\n  bid_recommendation: eval_data.bid_recommendation,\n  rationale: eval_data.rationale || '',\n  strengths: eval_data.strengths || [],\n  eligibility_summary: eval_data.eligibility_summary,\n  eligibility_requirements: eval_data.eligibility_requirements || [],\n  risks: eval_data.risks || [],\n  clarifications: eval_data.clarifications || [],\n  processing_status: 'complete'\n} }];"
+        "code": "const eval_data = $('finalize-evaluation').first().json;\nreturn [{ json: {\n  id: eval_data.id,\n  strategic_fit_score: eval_data.strategic_fit_score,\n  bid_recommendation: eval_data.bid_recommendation,\n  rationale: eval_data.rationale || '',\n  strengths: eval_data.strengths || [],\n  eligibility_summary: eval_data.eligibility_summary,\n  eligibility_requirements: eval_data.eligibility_requirements || [],\n  risks: eval_data.risks || [],\n  clarifications: eval_data.clarifications || [],\n  processing_status: 'complete'\n} }];"
       }
     },
     {
@@ -192,11 +224,6 @@
       "from": "prepare-context",
       "from_output": 0,
       "to": "geocode-distance"
-    },
-    {
-      "from": "parse-evaluation",
-      "from_output": 0,
-      "to": "save-evaluation"
     },
     {
       "from": "save-evaluation",
@@ -236,7 +263,37 @@
     {
       "from": "reconcile-evaluation-llm",
       "from_output": 0,
+      "to": "inspect-repaired-evaluation"
+    },
+    {
+      "from": "inspect-repaired-evaluation",
+      "from_output": 0,
+      "to": "route-repaired-evaluation"
+    },
+    {
+      "from": "route-repaired-evaluation",
+      "from_output": 0,
+      "to": "build-review-fallback"
+    },
+    {
+      "from": "route-repaired-evaluation",
+      "from_output": 1,
       "to": "parse-evaluation"
+    },
+    {
+      "from": "parse-evaluation",
+      "from_output": 0,
+      "to": "finalize-evaluation"
+    },
+    {
+      "from": "build-review-fallback",
+      "from_output": 0,
+      "to": "finalize-evaluation"
+    },
+    {
+      "from": "finalize-evaluation",
+      "from_output": 0,
+      "to": "save-evaluation"
     }
   ]
 }

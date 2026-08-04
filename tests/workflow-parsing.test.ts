@@ -814,6 +814,108 @@ test('stage 3 routes one safe invalid draft through evidence-grounded reconcilia
   }
 });
 
+test('stage 3 preserves valid judgments and marks only unresolved requirements for review', async () => {
+  const initialCandidate = {
+    ...validEvaluation,
+    strategic_fit_score: 74,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const repairedCandidate = {
+    ...validEvaluation,
+    strategic_fit_score: 'invalid',
+    rationale: '',
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'compliant', is_blocking: false },
+      { id: 'REQ-002', status: 'unclear', is_blocking: false },
+    ],
+  };
+  const context: ExecutionContext = new Map([
+    ...stage3Context(),
+    ['inspect-evaluation', [{ json: {
+      reconciliation_candidate: initialCandidate,
+    } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'build-review-fallback') },
+    [{ json: {
+      reconciliation_candidate: repairedCandidate,
+      reconciliation_source_requirements: [
+        { id: 'REQ-001', is_critical: false },
+        { id: 'REQ-002', is_critical: true },
+      ],
+    } }],
+    context,
+  );
+  const output = result[0][0].json;
+
+  assert.equal(output.processing_status, 'complete');
+  assert.equal(output.bid_recommendation, 'needs_review');
+  assert.equal(output.strategic_fit_score, 74);
+  assert.deepEqual(output.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 0,
+    needs_review_count: 1,
+    blocking_issues: 0,
+  });
+  assert.deepEqual(output.eligibility_requirements, [
+    { id: 'REQ-001', status: 'compliant', is_blocking: false },
+    {
+      id: 'REQ-002',
+      status: 'needs_review',
+      is_blocking: false,
+      review_reason: 'Modellbewertung blieb nach einer Reparatur uneindeutig.',
+    },
+  ]);
+  assert.equal(output.distance_km, 47.5);
+});
+
+test('stage 3 review fallback preserves a validated blocker and never schedules another model call', async () => {
+  const context: ExecutionContext = new Map([
+    ...stage3Context(),
+    ['inspect-evaluation', [{ json: {
+      reconciliation_candidate: {
+        ...validEvaluation,
+        eligibility_requirements: [
+          { id: 'REQ-001', status: 'compliant', is_blocking: false },
+          { id: 'REQ-002', status: 'not_met', is_blocking: true },
+        ],
+      },
+    } }]],
+  ]);
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'build-review-fallback') },
+    [{ json: {
+      reconciliation_candidate: { eligibility_requirements: [] },
+      reconciliation_source_requirements: [
+        { id: 'REQ-001', is_critical: false },
+        { id: 'REQ-002', is_critical: true },
+      ],
+    } }],
+    context,
+  );
+  assert.equal(result[0][0].json.bid_recommendation, 'recommend_no_bid');
+
+  const workflow = JSON.parse(readFileSync(
+    new URL('../workflows/tender-stage3-evaluation.json', import.meta.url),
+    'utf8',
+  )) as {
+    nodes: WorkflowCodeNode[];
+    edges: Array<{ from: string; from_output: number; to: string }>;
+  };
+  assert.equal(workflow.nodes.filter((node) => node.id === 'reconcile-evaluation-llm').length, 1);
+  assert.deepEqual(
+    workflow.edges
+      .filter((edge) => edge.from === 'route-repaired-evaluation')
+      .map((edge) => [edge.from_output, edge.to])
+      .sort((left, right) => Number(left[0]) - Number(right[0])),
+    [[0, 'build-review-fallback'], [1, 'parse-evaluation']],
+  );
+});
+
 test('stage 3 explicitly selects coverage with the requirement inputs', () => {
   const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
   assert.ok(select?.split(',').map((column) => column.trim()).includes('requirements_coverage'));
