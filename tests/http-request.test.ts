@@ -124,6 +124,24 @@ test('HTTP requests serialize a bounded body object from each input item', async
   assert.deepEqual(requestBodies, ['{"chunk":1}', '{"chunk":2}']);
 });
 
+test('HTTP requests enforce configured outbound body bytes before fetch', async () => {
+  let calls = 0;
+  await withFetch(async () => {
+    calls += 1;
+    return Response.json({ ok: true });
+  }, async () => {
+    await assert.rejects(
+      () => httpRequestExecutor.execute(
+        { ...config, max_body_bytes: 8 },
+        [{ json: { value: 'ä' } }],
+        new Map(),
+      ),
+      /HTTP body too large/,
+    );
+  });
+  assert.equal(calls, 0);
+});
+
 test('HTTP requests retain first-item-only behavior unless batching is explicit', async () => {
   const requestBodies: string[] = [];
 
@@ -259,6 +277,19 @@ test('Gemini 5xx fails without returning a successful node result', async () => 
       () => httpRequestExecutor.execute(config, [{ json: { prompt: 'synthetic' } }], new Map()),
       /HTTP 503/,
     );
+  });
+});
+
+test('an explicitly optional HTTP request returns only a fixed fallback marker', async () => {
+  await withFetch(async () => new Response('raw provider failure', { status: 503 }), async () => {
+    const output = await httpRequestExecutor.execute(
+      { ...config, continue_on_error: true },
+      [{ json: { prompt: 'synthetic' } }],
+      new Map(),
+    );
+
+    assert.deepEqual(output, [[{ json: { http_error: true } }]]);
+    assert.doesNotMatch(JSON.stringify(output), /raw provider failure/);
   });
 });
 

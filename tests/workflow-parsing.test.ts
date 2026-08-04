@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { codeExecutor } from '../lib/nodes/code.ts';
+import { ifExecutor } from '../lib/nodes/control.ts';
 import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
 import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 
@@ -14,6 +15,7 @@ interface WorkflowCodeNode {
     body_input_field?: string;
     code?: string;
     condition?: string;
+    continue_on_error?: boolean;
     process_each_item?: boolean;
     select?: string;
   };
@@ -632,6 +634,97 @@ test('stage 2 combines bounded chunk responses without losing source classificat
     unclassified_total: 0,
     group_ids: ['CHUNK-01-GROUP-001', 'CHUNK-02-GROUP-001'],
   });
+});
+
+test('stage 2 accepts only an exact cross-chunk semantic merge', async () => {
+  const positions = Array.from({ length: 121 }, (_, index) => ({
+    id: `source-${index + 1}`,
+    short_text: `Position ${index + 1}`,
+    unit: 'm',
+    quantity: 1,
+    category_path: ['Los 1'],
+  }));
+  const positionIds = positions.map((_, index) => workloadClassificationKey(index));
+  const existing = {
+    requirements: [],
+    value_breakdown: {
+      semantic_groups: [{ id: 'candidate', position_ids: positionIds }],
+      grouping_status: 'needs_review',
+      grouped_total: 121,
+      source_total: 121,
+      mode: 'chunked_needs_merge',
+    },
+  };
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: positions } }]],
+    ['parse-workload', [{ json: existing }]],
+  ]);
+  const mergedGroups = [{
+    id: 'GROUP-001',
+    label: 'Zusammenhängendes Gesamtpaket',
+    kind: 'semantic',
+    position_ids: positionIds,
+    distinguishing_attributes: ['Los 1'],
+    confidence: 0.91,
+    rationale: 'Die Positionen bilden über die Modell-Chunks hinweg ein Arbeitspaket.',
+  }];
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'apply-workload-merge') },
+    [{ json: llmResponse({ groups: mergedGroups }) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    semantic_groups: Array<{ source_positions: unknown[]; quantity_totals: unknown[] }>;
+    grouping_status: string;
+    grouped_total: number;
+    mode: string;
+  };
+
+  assert.equal(breakdown.grouping_status, 'complete');
+  assert.equal(breakdown.grouped_total, 121);
+  assert.equal(breakdown.mode, 'chunked_complete');
+  assert.equal(breakdown.semantic_groups[0].source_positions.length, 121);
+  assert.deepEqual(breakdown.semantic_groups[0].quantity_totals, [{ unit: 'm', quantity: 121 }]);
+
+  const fallback = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'apply-workload-merge') },
+    [{ json: llmResponse({ groups: [{ ...mergedGroups[0], position_ids: ['UNKNOWN'] }] }) }],
+    context,
+  );
+  assert.deepEqual(fallback, [[{ json: existing }]]);
+});
+
+test('stage 2 makes the semantic merge call only for complete multi-chunk candidates', async () => {
+  const route = workflowNode('tender-stage2-requirements.json', 'route-workload-merge');
+  const single = await ifExecutor.execute(
+    route.config,
+    [{ json: { value_breakdown: { mode: 'complete', grouping_status: 'complete' } } }],
+    new Map(),
+  );
+  const multi = await ifExecutor.execute(
+    route.config,
+    [{ json: { value_breakdown: {
+      mode: 'chunked_needs_merge',
+      grouping_status: 'needs_review',
+      semantic_groups: [{ id: 'candidate' }],
+      grouped_total: 121,
+      source_total: 121,
+    } } }],
+    new Map(),
+  );
+
+  assert.equal(single[0].length, 0);
+  assert.equal(single[1].length, 1);
+  assert.equal(multi[0].length, 1);
+  assert.equal(multi[1].length, 0);
+  assert.equal(
+    workflowNode('tender-stage2-requirements.json', 'reconcile-workload-groups-llm')
+      .config.continue_on_error,
+    true,
+  );
+  assert.ok(workflowCode('tender-stage2-requirements.json', 'parse-summary')
+    .includes("$('finalize-workload').first().json.value_breakdown"));
 });
 
 test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload classifications', async () => {
