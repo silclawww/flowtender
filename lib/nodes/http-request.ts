@@ -1,4 +1,9 @@
-import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+import type {
+  NodeExecutor,
+  ExecutionItem,
+  ExecutionContext,
+  ExecutionRuntime,
+} from '@/types/execution';
 import {
   NonRetryableError,
   WorkflowDeadlineError,
@@ -7,6 +12,7 @@ import {
 
 const MAX_RETRIES = 3;
 const MAX_RETRY_AFTER_MS = 5_000;
+const MAX_ITEM_BATCH = 10;
 
 function requestTimeout(timeoutMs: number): NonRetryableError {
   return new NonRetryableError(`HTTP request timed out after ${timeoutMs}ms`);
@@ -51,14 +57,18 @@ function evalTemplate(
   });
 }
 
-export const httpRequestExecutor: NodeExecutor = {
-  async execute(config, input, context, runtime) {
+async function executeRequest(
+  config: Record<string, unknown>,
+  input: ExecutionItem[],
+  context: ExecutionContext,
+  runtime?: ExecutionRuntime,
+): Promise<ExecutionItem> {
     const method = (config.method as string || 'POST').toUpperCase();
     const $inputHelper = { first: () => input[0] || { json: {} }, all: () => input };
     const $json = $inputHelper.first().json;
-    
+
     const url = evalTemplate(config.url as string || '', $inputHelper, $json, context);
-    
+
     // Build headers
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -72,13 +82,13 @@ export const httpRequestExecutor: NodeExecutor = {
     if (config.auth_type === 'bearer' && config.auth_value) {
       headers['Authorization'] = `Bearer ${evalTemplate(config.auth_value as string, $inputHelper, $json, context)}`;
     }
-    
+
     // Body
     let body: string | undefined;
     if (method !== 'GET' && config.body) {
       body = evalTemplate(config.body as string, $inputHelper, $json, context);
     }
-    
+
     // Fetch with retry on 429 and configurable timeout (default 120s)
     const configuredTimeoutMs = typeof config.timeout_ms === 'number' ? config.timeout_ms : 120_000;
     const workflowDeadline = runtime?.deadline ?? Number.POSITIVE_INFINITY;
@@ -94,7 +104,7 @@ export const httpRequestExecutor: NodeExecutor = {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const resp = await fetch(url, { method, headers, body, signal: controller.signal });
-        
+
         if (resp.status === 429) {
           await cancelResponseBody(resp);
           if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
@@ -119,7 +129,7 @@ export const httpRequestExecutor: NodeExecutor = {
           }
           continue;
         }
-        
+
         if (!resp.ok) {
           await resp.text();
           throw new Error(`HTTP ${resp.status}`);
@@ -134,8 +144,8 @@ export const httpRequestExecutor: NodeExecutor = {
         }
         if (Date.now() >= workflowDeadline) throw new WorkflowDeadlineError();
         if (Date.now() >= attemptDeadline) throw requestTimeout(timeoutMs);
-        
-        return [[{ json: responseJson }]];
+
+        return { json: responseJson };
       } catch (err) {
         if (isNonRetryableError(err)) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -152,5 +162,21 @@ export const httpRequestExecutor: NodeExecutor = {
       }
     }
     throw lastError || new Error('HTTP request failed');
+}
+
+export const httpRequestExecutor: NodeExecutor = {
+  async execute(config, input, context, runtime) {
+    if (config.process_each_item !== true) {
+      return [[await executeRequest(config, input, context, runtime)]];
+    }
+    if (input.length > MAX_ITEM_BATCH) {
+      throw new NonRetryableError('HTTP item batch too large');
+    }
+
+    const output: ExecutionItem[] = [];
+    for (const item of input) {
+      output.push(await executeRequest(config, [item], context, runtime));
+    }
+    return [output];
   }
 };
