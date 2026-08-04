@@ -971,6 +971,72 @@ test('stage 2 records complete classification coverage across the former sample 
   }
 });
 
+test('stage 2 keeps an oversized LV as one explicit bounded sample', async () => {
+  const positions = Array.from({ length: 1201 }, (_, index) => ({
+    id: `lot-position-${index + 1}`,
+    short_text: `Position ${index + 1}`,
+    unit: 'St',
+    quantity: 1,
+  }));
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: positions } }]],
+  ]);
+  const prepared = (await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: { requirements: [] } }],
+    context,
+  ))[0];
+
+  assert.equal(prepared.length, 1);
+  assert.equal((prepared[0].json.positions as unknown[]).length, 120);
+
+  const positionIds = Array.from({ length: 120 }, (_, index) => workloadClassificationKey(index));
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: llmResponse({
+      classifications: positionIds.map(id => ({
+        id,
+        type: 'eigen',
+        reason: 'Typische Eigenleistung',
+      })),
+      groups: [{
+        id: 'GROUP-001',
+        label: 'Repräsentative Stichprobe',
+        kind: 'semantic',
+        position_ids: positionIds,
+        distinguishing_attributes: [],
+        confidence: 0.8,
+        rationale: 'Ein klar begrenztes Stichproben-Arbeitspaket.',
+      }],
+    }) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    grouping_status: string;
+    grouped_total: number;
+    source_total: number;
+    classified_total: number;
+    unclassified_total: number;
+    mode: string;
+  };
+
+  assert.deepEqual({
+    grouping_status: breakdown.grouping_status,
+    grouped_total: breakdown.grouped_total,
+    source_total: breakdown.source_total,
+    classified_total: breakdown.classified_total,
+    unclassified_total: breakdown.unclassified_total,
+    mode: breakdown.mode,
+  }, {
+    grouping_status: 'sample_complete',
+    grouped_total: 120,
+    source_total: 1201,
+    classified_total: 120,
+    unclassified_total: 1081,
+    mode: 'first_120_sample',
+  });
+});
+
 test('stage 2 classifies duplicate file-local position IDs independently and saves original IDs', async () => {
   const positions = [
     { id: '01.001', short_text: 'Los 1 Baustelle einrichten', unit: 'psch' },
