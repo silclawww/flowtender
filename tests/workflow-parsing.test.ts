@@ -128,10 +128,19 @@ test('Stage 3 geocoding falls back to the company postal code when the exact loc
       '83661, Deutschland',
     ]);
     assert.equal(typeof result[0]?.[0]?.json.distance_km, 'number');
-    assert.match(String(result[0]?.[0]?.json.distance_note), /Luftlinie/);
+    const note = String(result[0]?.[0]?.json.distance_note);
+    assert.match(note, /Fahrtstrecke geschätzt/);
+    assert.ok(note.indexOf('Fahrtstrecke geschätzt') < note.indexOf('Luftlinie'));
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Stage 3 keeps distance informational and outside the evaluation prompt', () => {
+  const body = workflowNode('tender-stage3-evaluation.json', 'evaluate-llm').config.body ?? '';
+
+  assert.doesNotMatch(body, /\$json\.distance_(?:km|note)/);
+  assert.doesNotMatch(body, /Entfernung über|Anfahrtskosten|Unterbringung|Logistikaufwand/);
 });
 
 const validPdfMetadata = {
