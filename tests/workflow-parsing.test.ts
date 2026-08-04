@@ -511,6 +511,9 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
       { ...workloadPositions[0], type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
       { ...workloadPositions[1], type: 'gemischt', reason: 'Lieferung und Einbau' },
     ],
+    semantic_groups: [],
+    grouping_status: 'needs_review',
+    grouped_total: 0,
     source_total: 2,
     classified_total: 2,
     unclassified_total: 0,
@@ -518,6 +521,108 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
     classified_at: (output.value_breakdown as { classified_at: string }).classified_at,
   });
   assert.match((output.value_breakdown as { classified_at: string }).classified_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('stage 2 preserves LLM semantic groups while deriving source coverage and quantities', async () => {
+  const positions = [
+    { id: '01.001', short_text: 'Boden lösen', unit: 'm3', quantity: 12.5, category_path: ['Los 1'] },
+    { id: '02.004', short_text: 'Boden laden', unit: 'm3', quantity: 7.5, category_path: ['Los 2'] },
+    { id: '03.002', short_text: 'Rohr DN 200 verlegen', unit: 'm', quantity: 18, category_path: ['Entwässerung'] },
+    { id: '03.003', short_text: 'Rohr DN 200 Sonderanschluss', unit: 'Sonder-EH', quantity: 2, category_path: ['Entwässerung'] },
+  ];
+  const classifications = positions.map((_, index) => ({
+    id: workloadClassificationKey(index),
+    type: 'eigen',
+    reason: 'Typische Eigenleistung',
+  }));
+  const groups = [
+    {
+      id: 'GROUP-001',
+      label: 'Boden lösen und laden',
+      kind: 'semantic',
+      position_ids: ['POS-001', 'POS-002'],
+      distinguishing_attributes: ['Bodenaushub'],
+      confidence: 0.94,
+      rationale: 'Gleicher zusammenhängender Erdbau-Arbeitsschritt über zwei Lose.',
+    },
+    {
+      id: 'GROUP-002',
+      label: 'Rohrleitung DN 200',
+      kind: 'semantic',
+      position_ids: ['POS-003', 'POS-004'],
+      distinguishing_attributes: ['DN 200'],
+      confidence: 0.9,
+      rationale: 'Eigenständiges Rohrpaket mit abweichender Einheit.',
+    },
+  ];
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: positions } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: llmResponse({ classifications, groups }) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    semantic_groups: unknown[];
+    grouping_status: string;
+    grouped_total: number;
+  };
+
+  assert.equal(breakdown.grouping_status, 'complete');
+  assert.equal(breakdown.grouped_total, 4);
+  assert.deepEqual(breakdown.semantic_groups, [
+    {
+      ...groups[0],
+      source_positions: [
+        { source_id: 'POS-001', id: '01.001', short_text: 'Boden lösen', unit: 'm3', quantity: 12.5 },
+        { source_id: 'POS-002', id: '02.004', short_text: 'Boden laden', unit: 'm3', quantity: 7.5 },
+      ],
+      quantity_totals: [{ unit: 'm3', quantity: 20 }],
+    },
+    {
+      ...groups[1],
+      source_positions: [
+        { source_id: 'POS-003', id: '03.002', short_text: 'Rohr DN 200 verlegen', unit: 'm', quantity: 18 },
+        { source_id: 'POS-004', id: '03.003', short_text: 'Rohr DN 200 Sonderanschluss', unit: 'Sonder-EH', quantity: 2 },
+      ],
+      quantity_totals: [{ unit: 'm', quantity: 18 }, { unit: 'Sonder-EH', quantity: 2 }],
+    },
+  ]);
+});
+
+test('stage 2 discards untrusted semantic groups without losing valid classifications', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: llmResponse({
+      classifications: validWorkload,
+      groups: [{
+        id: 'GROUP-001',
+        label: 'Untrusted group',
+        kind: 'semantic',
+        position_ids: ['POS-001', 'UNKNOWN'],
+        distinguishing_attributes: [],
+        confidence: 0.8,
+        rationale: 'Contains an unknown source reference.',
+      }],
+    }) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    semantic_groups: unknown[];
+    grouping_status: string;
+    grouped_total: number;
+    summary: { total: number };
+  };
+
+  assert.deepEqual(breakdown.semantic_groups, []);
+  assert.equal(breakdown.grouping_status, 'needs_review');
+  assert.equal(breakdown.grouped_total, 0);
+  assert.equal(breakdown.summary.total, 2);
 });
 
 test('stage 2 workload parsing ignores safe extras and prompt-only reason length differences', async () => {
