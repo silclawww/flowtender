@@ -576,16 +576,16 @@ test('stage 2 preserves LLM semantic groups while deriving source coverage and q
     {
       ...groups[0],
       source_positions: [
-        { source_id: 'POS-001', id: '01.001', short_text: 'Boden lösen', unit: 'm3', quantity: 12.5 },
-        { source_id: 'POS-002', id: '02.004', short_text: 'Boden laden', unit: 'm3', quantity: 7.5 },
+        { source_id: 'POS-001', id: '01.001', short_text: 'Boden lösen', category_path: ['Los 1'], unit: 'm3', quantity: 12.5 },
+        { source_id: 'POS-002', id: '02.004', short_text: 'Boden laden', category_path: ['Los 2'], unit: 'm3', quantity: 7.5 },
       ],
       quantity_totals: [{ unit: 'm3', quantity: 20 }],
     },
     {
       ...groups[1],
       source_positions: [
-        { source_id: 'POS-003', id: '03.002', short_text: 'Rohr DN 200 verlegen', unit: 'm', quantity: 18 },
-        { source_id: 'POS-004', id: '03.003', short_text: 'Rohr DN 200 Sonderanschluss', unit: 'Sonder-EH', quantity: 2 },
+        { source_id: 'POS-003', id: '03.002', short_text: 'Rohr DN 200 verlegen', category_path: ['Entwässerung'], unit: 'm', quantity: 18 },
+        { source_id: 'POS-004', id: '03.003', short_text: 'Rohr DN 200 Sonderanschluss', category_path: ['Entwässerung'], unit: 'Sonder-EH', quantity: 2 },
       ],
       quantity_totals: [{ unit: 'm', quantity: 18 }, { unit: 'Sonder-EH', quantity: 2 }],
     },
