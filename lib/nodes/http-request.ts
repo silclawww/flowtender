@@ -27,6 +27,22 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
+function waitWithSignal(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new DOMException('aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 // Evaluate {{ expression }} templates against execution context
 function evalTemplate(
   template: string,
@@ -90,10 +106,13 @@ export const httpRequestExecutor: NodeExecutor = {
       const timeoutMs = Math.min(configuredTimeoutMs, workflowTimeRemaining);
       const timeoutIsWorkflowDeadline = configuredTimeoutMs >= workflowTimeRemaining;
       const controller = new AbortController();
+      const requestSignal = runtime?.signal
+        ? AbortSignal.any([controller.signal, runtime.signal])
+        : controller.signal;
       const attemptDeadline = attemptStartedAt + timeoutMs;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const resp = await fetch(url, { method, headers, body, signal: controller.signal });
+        const resp = await fetch(url, { method, headers, body, signal: requestSignal });
         
         if (resp.status === 429) {
           await cancelResponseBody(resp);
@@ -111,7 +130,7 @@ export const httpRequestExecutor: NodeExecutor = {
           }
           const waitMs = Math.min(requestedWaitMs, MAX_RETRY_AFTER_MS, remainingMs);
           console.log(`[http_request] 429 rate limit, waiting ${waitMs}ms before retry ${attempt + 1}/${MAX_RETRIES}`);
-          await new Promise(r => setTimeout(r, waitMs));
+          await waitWithSignal(waitMs, requestSignal);
           if (Date.now() >= attemptDeadline) {
             throw Date.now() >= workflowDeadline
               ? new WorkflowDeadlineError()

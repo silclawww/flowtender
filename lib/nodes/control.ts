@@ -1,4 +1,6 @@
 import type { NodeExecutor, ExecutionItem, ExecutionContext } from '@/types/execution';
+import { setTimeout as delay } from 'node:timers/promises';
+import { WorkflowDeadlineError } from '../retry-errors.ts';
 
 // Helper: evaluate a JS expression string against context
 function evalCondition(
@@ -61,9 +63,11 @@ export const ifExecutor: NodeExecutor = {
 // wait — pauses N seconds then passes input through
 // Config: { seconds: number }
 export const waitExecutor: NodeExecutor = {
-  async execute(config, input) {
+  async execute(config, input, _context, runtime) {
     const seconds = (config.seconds as number) || 1;
-    await new Promise(r => setTimeout(r, seconds * 1000));
+    const signal = runtime?.signal;
+    if (signal?.aborted) throw new WorkflowDeadlineError();
+    await delay(seconds * 1000, undefined, signal ? { signal } : undefined);
     return [[...input]];
   }
 };

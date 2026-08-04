@@ -1,4 +1,5 @@
 import { validate as isUuid, v4 as uuidv4 } from 'uuid';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loadWorkflow } from './loader.ts';
 import { codeExecutor } from '../nodes/code.ts';
 import { httpRequestExecutor } from '../nodes/http-request.ts';
@@ -50,6 +51,7 @@ async function executeWithRetry(
   context: ExecutionContext,
   retry: NodeRetryConfig = {},
   deadline = Number.POSITIVE_INFINITY,
+  signal?: AbortSignal,
 ): Promise<ExecutionItem[][]> {
   const maxAttempts = retry.max_attempts ?? 1;
   const delayMs = retry.delay_ms ?? 1000;
@@ -58,18 +60,42 @@ async function executeWithRetry(
   let lastError: Error | undefined;
 
   const requireTimeRemaining = (): number => {
+    if (signal?.aborted) throw new WorkflowDeadlineError();
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new WorkflowDeadlineError();
     return remaining;
   };
-  
+
+  const untilDeadline = <T>(operation: Promise<T>): Promise<T> => {
+    if (!signal) return operation;
+    if (signal.aborted) return Promise.reject(new WorkflowDeadlineError());
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort);
+        reject(new WorkflowDeadlineError());
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      operation.then(
+        value => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        error => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    });
+  };
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     requireTimeRemaining();
     try {
-      const result = await executor.execute(config, input, context, { deadline });
+      const result = await untilDeadline(executor.execute(config, input, context, { deadline, signal }));
       requireTimeRemaining();
       return result;
     } catch (err) {
+      if (signal?.aborted || Date.now() >= deadline) throw new WorkflowDeadlineError();
       if (isNonRetryableError(err)) throw err;
       lastError = err instanceof Error ? err : new Error(String(err));
       
@@ -79,7 +105,12 @@ async function executeWithRetry(
           : delayMs * attempt;
         const wait = Math.min(requestedWait, requireTimeRemaining());
         console.warn(`[runner] node retry ${attempt}/${maxAttempts}, waiting ${wait}ms...`);
-        await new Promise(resolve => setTimeout(resolve, wait));
+        try {
+          await delay(wait, undefined, signal ? { signal } : undefined);
+        } catch (error) {
+          if (signal?.aborted) throw new WorkflowDeadlineError();
+          throw error;
+        }
         requireTimeRemaining();
       }
     }
@@ -147,6 +178,7 @@ export class WorkflowRunner {
       : normalizeCorrelationId(options.correlationId, executionId);
 
     let receiverOwnedLease: string | null = null;
+    let workflowTimer: ReturnType<typeof setTimeout> | undefined;
     if (preflight.trustedContext) {
       await claimPipelineAdmission(this.supabase, {
         leaseId: preflight.trustedContext.admission_id,
@@ -255,7 +287,12 @@ export class WorkflowRunner {
         startNodes.map(n => ({ node: n, input: triggerItems }));
       
       const executed = new Set<string>();
-      const timeout = Date.now() + timeoutMs;
+      const timeout = startTime + timeoutMs;
+      const workflowController = new AbortController();
+      workflowTimer = setTimeout(
+        () => workflowController.abort(),
+        Math.max(0, timeout - Date.now()),
+      );
 
       while (queue.length > 0 && Date.now() < timeout) {
         const { node, input } = queue.shift()!;
@@ -284,14 +321,22 @@ export class WorkflowRunner {
             nodeErrorCode = 'UNKNOWN_NODE_TYPE';
             throw new Error('Unknown node type');
           }
-          
-          outputs = await executeWithRetry(executor, node.config, input, context, node.retry, timeout);
-          
+
+          outputs = await executeWithRetry(
+            executor,
+            node.config,
+            input,
+            context,
+            node.retry,
+            timeout,
+            workflowController.signal,
+          );
+
           // For 'respond' nodes, capture the response payload
           if (node.type === 'respond' && synchronous) {
             responsePayload = outputs[0] || input;
           }
-          
+
           // Store this node's output in context (port 0 output)
           context.set(node.id, outputs[0] || []);
 
@@ -331,7 +376,7 @@ export class WorkflowRunner {
         for (const edge of edges) {
           const portOutput = outputs[edge.from_output] || [];
           if (portOutput.length === 0) continue; // Empty branch — skip
-          
+
           const nextNode = workflow.nodes.find(n => n.id === edge.to);
           if (nextNode && !executed.has(nextNode.id)) {
             queue.push({ node: nextNode, input: portOutput });
@@ -396,6 +441,7 @@ export class WorkflowRunner {
         duration_ms: duration,
       };
     } finally {
+      clearTimeout(workflowTimer);
       if (receiverOwnedLease) {
         await releasePipelineAdmission(this.supabase, receiverOwnedLease);
       }
