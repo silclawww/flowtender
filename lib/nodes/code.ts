@@ -12,6 +12,7 @@ void tracePdfRuntime;
 
 const workerSource = `
   const { parentPort, workerData } = require('node:worker_threads');
+  const vm = require('node:vm');
   (async () => {
     const allowedModules = new Map([
       ['crypto', require('node:crypto')],
@@ -56,12 +57,29 @@ const workerSource = `
         signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
       });
     };
-    const execute = new Function(
-      '$input', '$json', '$', 'require', 'JSON', 'fetch', 'console',
-      'return (async () => { ' + workerData.code + '\\n})()',
-    );
-    const result = await execute(
-      $input, $json, $nodeRef, safeRequire, JSON, deadlineFetch, workerConsole,
+    const script = new vm.Script('(async () => { ' + workerData.code + '\\n})()');
+    const result = await script.runInNewContext(
+      {
+        $input,
+        $json,
+        $: $nodeRef,
+        require: safeRequire,
+        JSON,
+        Buffer,
+        fetch: deadlineFetch,
+        console: workerConsole,
+        AbortController,
+        AbortSignal,
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+        URL,
+        URLSearchParams,
+        TextEncoder,
+        TextDecoder,
+      },
+      { contextCodeGeneration: { strings: false, wasm: false } },
     );
     parentPort.postMessage({ result });
   })().catch(error => {
