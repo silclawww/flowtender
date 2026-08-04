@@ -85,8 +85,24 @@ async function executeRequest(
 
     // Body
     let body: string | undefined;
-    if (method !== 'GET' && config.body) {
+    if (method !== 'GET' && typeof config.body_input_field === 'string') {
+      const inputBody = $json[config.body_input_field];
+      if (inputBody === null || typeof inputBody !== 'object' || Array.isArray(inputBody)) {
+        throw new NonRetryableError('HTTP input body unavailable');
+      }
+      body = JSON.stringify(inputBody);
+      if (body.length > 1_000_000) throw new NonRetryableError('HTTP input body too large');
+    } else if (method !== 'GET' && config.body) {
       body = evalTemplate(config.body as string, $inputHelper, $json, context);
+    }
+    if (body !== undefined && typeof config.max_body_bytes === 'number') {
+      const maxBodyBytes = config.max_body_bytes;
+      if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1 || maxBodyBytes > 1_000_000) {
+        throw new NonRetryableError('HTTP body limit invalid');
+      }
+      if (new TextEncoder().encode(body).length > maxBodyBytes) {
+        throw new NonRetryableError('HTTP body too large');
+      }
     }
 
     // Fetch with retry on 429 and configurable timeout (default 120s)
@@ -166,17 +182,22 @@ async function executeRequest(
 
 export const httpRequestExecutor: NodeExecutor = {
   async execute(config, input, context, runtime) {
-    if (config.process_each_item !== true) {
-      return [[await executeRequest(config, input, context, runtime)]];
-    }
-    if (input.length > MAX_ITEM_BATCH) {
-      throw new NonRetryableError('HTTP item batch too large');
-    }
+    try {
+      if (config.process_each_item !== true) {
+        return [[await executeRequest(config, input, context, runtime)]];
+      }
+      if (input.length > MAX_ITEM_BATCH) {
+        throw new NonRetryableError('HTTP item batch too large');
+      }
 
-    const output: ExecutionItem[] = [];
-    for (const item of input) {
-      output.push(await executeRequest(config, [item], context, runtime));
+      const output: ExecutionItem[] = [];
+      for (const item of input) {
+        output.push(await executeRequest(config, [item], context, runtime));
+      }
+      return [output];
+    } catch (error) {
+      if (error instanceof WorkflowDeadlineError || config.continue_on_error !== true) throw error;
+      return [[{ json: { http_error: true } }]];
     }
-    return [output];
   }
 };

@@ -99,6 +99,49 @@ test('HTTP requests reject oversized item batches before contacting the provider
   assert.equal(calls, 0);
 });
 
+test('HTTP requests serialize a bounded body object from each input item', async () => {
+  const requestBodies: string[] = [];
+
+  await withFetch(async (_url, init) => {
+    requestBodies.push(String(init?.body));
+    return Response.json({ ok: true });
+  }, async () => {
+    await httpRequestExecutor.execute(
+      {
+        ...config,
+        body_input_field: 'request_body',
+        process_each_item: true,
+        timeout_ms: 1_000,
+      },
+      [
+        { json: { request_body: { chunk: 1 } } },
+        { json: { request_body: { chunk: 2 } } },
+      ],
+      new Map(),
+    );
+  });
+
+  assert.deepEqual(requestBodies, ['{"chunk":1}', '{"chunk":2}']);
+});
+
+test('HTTP requests enforce configured outbound body bytes before fetch', async () => {
+  let calls = 0;
+  await withFetch(async () => {
+    calls += 1;
+    return Response.json({ ok: true });
+  }, async () => {
+    await assert.rejects(
+      () => httpRequestExecutor.execute(
+        { ...config, max_body_bytes: 8 },
+        [{ json: { value: 'ä' } }],
+        new Map(),
+      ),
+      /HTTP body too large/,
+    );
+  });
+  assert.equal(calls, 0);
+});
+
 test('HTTP requests retain first-item-only behavior unless batching is explicit', async () => {
   const requestBodies: string[] = [];
 
@@ -234,6 +277,19 @@ test('Gemini 5xx fails without returning a successful node result', async () => 
       () => httpRequestExecutor.execute(config, [{ json: { prompt: 'synthetic' } }], new Map()),
       /HTTP 503/,
     );
+  });
+});
+
+test('an explicitly optional HTTP request returns only a fixed fallback marker', async () => {
+  await withFetch(async () => new Response('raw provider failure', { status: 503 }), async () => {
+    const output = await httpRequestExecutor.execute(
+      { ...config, continue_on_error: true },
+      [{ json: { prompt: 'synthetic' } }],
+      new Map(),
+    );
+
+    assert.deepEqual(output, [[{ json: { http_error: true } }]]);
+    assert.doesNotMatch(JSON.stringify(output), /raw provider failure/);
   });
 });
 

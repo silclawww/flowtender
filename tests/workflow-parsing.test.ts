@@ -3,13 +3,22 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { codeExecutor } from '../lib/nodes/code.ts';
+import { ifExecutor } from '../lib/nodes/control.ts';
 import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
 import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 
 interface WorkflowCodeNode {
   id: string;
   type: string;
-  config: { body?: string; code?: string; condition?: string; select?: string };
+  config: {
+    body?: string;
+    body_input_field?: string;
+    code?: string;
+    condition?: string;
+    continue_on_error?: boolean;
+    process_each_item?: boolean;
+    select?: string;
+  };
   retry?: { max_attempts?: number };
 }
 
@@ -510,9 +519,212 @@ const validWorkload = [
 
 test('stage 2 uses the same bounded index classification keys in the request and parser', () => {
   const keyGenerator = "const classificationKey = (index) => 'POS-' + String(index + 1).padStart(3, '0');";
-  assert.ok(workflowNode('tender-stage2-requirements.json', 'classify-workload').config.body?.includes(keyGenerator));
+  assert.ok(workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks').includes(keyGenerator));
   assert.ok(workflowCode('tender-stage2-requirements.json', 'parse-workload').includes(keyGenerator));
   assert.equal(workloadClassificationKey(119), 'POS-120');
+});
+
+test('stage 2 prepares every source position as bounded globally keyed chunks', async () => {
+  const positions = Array.from({ length: 908 }, (_, index) => ({
+    id: `source-${index + 1}`,
+    short_text: `Position ${index + 1}`,
+    unit: index % 2 === 0 ? 'm' : 'St',
+    category_path: [`Los ${index < 454 ? 1 : 2}`],
+  }));
+  const passthrough = { requirements: [validRequirement] };
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: positions } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: passthrough }],
+    context,
+  );
+  const chunks = result[0].map(item => item.json as {
+    chunk_index: number;
+    chunk_count: number;
+    positions: Array<{ id: string }>;
+  });
+
+  assert.equal(chunks.length, 8);
+  assert.ok(chunks.every(chunk => chunk.positions.length <= 120));
+  assert.ok(chunks.every((chunk, index) =>
+    chunk.chunk_index === index && chunk.chunk_count === chunks.length));
+  assert.deepEqual(chunks.flatMap(chunk => chunk.positions).map(position => position.id),
+    positions.map((_, index) => workloadClassificationKey(index)));
+  assert.equal(chunks[0].positions[0].id, 'POS-001');
+  assert.equal(chunks[7].positions.at(-1)?.id, 'POS-908');
+});
+
+test('stage 2 opts chunk classification into bounded per-item transport', () => {
+  const node = workflowNode('tender-stage2-requirements.json', 'classify-workload');
+  assert.equal(node.config.process_each_item, true);
+  assert.equal(node.config.body_input_field, 'request_body');
+});
+
+test('stage 2 combines bounded chunk responses without losing source classifications', async () => {
+  const positions = Array.from({ length: 121 }, (_, index) => ({
+    id: `source-${index + 1}`,
+    short_text: `Position ${index + 1}`,
+    unit: 'St',
+    quantity: 1,
+    category_path: ['Los 1'],
+  }));
+  const baseContext: ExecutionContext = new Map([
+    ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: positions } }]],
+  ]);
+  const prepared = (await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: { requirements: [] } }],
+    baseContext,
+  ))[0];
+  const responses = prepared.map((item, chunkIndex) => {
+    const chunkPositions = item.json.positions as Array<{ id: string }>;
+    return { json: llmResponse({
+      classifications: chunkPositions.map(position => ({
+        id: position.id,
+        type: 'eigen',
+        reason: 'Typische Eigenleistung',
+      })),
+      groups: [{
+        id: 'GROUP-001',
+        label: `Arbeitspaket ${chunkIndex + 1}`,
+        kind: 'semantic',
+        position_ids: chunkPositions.map(position => position.id),
+        distinguishing_attributes: ['Los 1'],
+        confidence: 0.9,
+        rationale: 'Zusammenhängendes Arbeitspaket innerhalb des Modell-Chunks.',
+      }],
+    }) };
+  });
+  const context = new Map(baseContext);
+  context.set('prepare-workload-chunks', prepared);
+  const combined = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'combine-workload-chunks') },
+    responses,
+    context,
+  );
+  const parsed = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    combined[0],
+    context,
+  );
+  const breakdown = parsed[0][0].json.value_breakdown as {
+    grouping_status: string;
+    mode: string;
+    source_total: number;
+    classified_total: number;
+    unclassified_total: number;
+    semantic_groups: Array<{ id: string }>;
+  };
+
+  assert.deepEqual({
+    grouping_status: breakdown.grouping_status,
+    mode: breakdown.mode,
+    source_total: breakdown.source_total,
+    classified_total: breakdown.classified_total,
+    unclassified_total: breakdown.unclassified_total,
+    group_ids: breakdown.semantic_groups.map(group => group.id),
+  }, {
+    grouping_status: 'needs_review',
+    mode: 'chunked_needs_merge',
+    source_total: 121,
+    classified_total: 121,
+    unclassified_total: 0,
+    group_ids: ['CHUNK-01-GROUP-001', 'CHUNK-02-GROUP-001'],
+  });
+});
+
+test('stage 2 accepts only an exact cross-chunk semantic merge', async () => {
+  const positions = Array.from({ length: 121 }, (_, index) => ({
+    id: `source-${index + 1}`,
+    short_text: `Position ${index + 1}`,
+    unit: 'm',
+    quantity: 1,
+    category_path: ['Los 1'],
+  }));
+  const positionIds = positions.map((_, index) => workloadClassificationKey(index));
+  const existing = {
+    requirements: [],
+    value_breakdown: {
+      semantic_groups: [{ id: 'candidate', position_ids: positionIds }],
+      grouping_status: 'needs_review',
+      grouped_total: 121,
+      source_total: 121,
+      mode: 'chunked_needs_merge',
+    },
+  };
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: positions } }]],
+    ['parse-workload', [{ json: existing }]],
+  ]);
+  const mergedGroups = [{
+    id: 'GROUP-001',
+    label: 'Zusammenhängendes Gesamtpaket',
+    kind: 'semantic',
+    position_ids: positionIds,
+    distinguishing_attributes: ['Los 1'],
+    confidence: 0.91,
+    rationale: 'Die Positionen bilden über die Modell-Chunks hinweg ein Arbeitspaket.',
+  }];
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'apply-workload-merge') },
+    [{ json: llmResponse({ groups: mergedGroups }) }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    semantic_groups: Array<{ source_positions: unknown[]; quantity_totals: unknown[] }>;
+    grouping_status: string;
+    grouped_total: number;
+    mode: string;
+  };
+
+  assert.equal(breakdown.grouping_status, 'complete');
+  assert.equal(breakdown.grouped_total, 121);
+  assert.equal(breakdown.mode, 'chunked_complete');
+  assert.equal(breakdown.semantic_groups[0].source_positions.length, 121);
+  assert.deepEqual(breakdown.semantic_groups[0].quantity_totals, [{ unit: 'm', quantity: 121 }]);
+
+  const fallback = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'apply-workload-merge') },
+    [{ json: llmResponse({ groups: [{ ...mergedGroups[0], position_ids: ['UNKNOWN'] }] }) }],
+    context,
+  );
+  assert.deepEqual(fallback, [[{ json: existing }]]);
+});
+
+test('stage 2 makes the semantic merge call only for complete multi-chunk candidates', async () => {
+  const route = workflowNode('tender-stage2-requirements.json', 'route-workload-merge');
+  const single = await ifExecutor.execute(
+    route.config,
+    [{ json: { value_breakdown: { mode: 'complete', grouping_status: 'complete' } } }],
+    new Map(),
+  );
+  const multi = await ifExecutor.execute(
+    route.config,
+    [{ json: { value_breakdown: {
+      mode: 'chunked_needs_merge',
+      grouping_status: 'needs_review',
+      semantic_groups: [{ id: 'candidate' }],
+      grouped_total: 121,
+      source_total: 121,
+    } } }],
+    new Map(),
+  );
+
+  assert.equal(single[0].length, 0);
+  assert.equal(single[1].length, 1);
+  assert.equal(multi[0].length, 1);
+  assert.equal(multi[1].length, 0);
+  assert.equal(
+    workflowNode('tender-stage2-requirements.json', 'reconcile-workload-groups-llm')
+      .config.continue_on_error,
+    true,
+  );
+  assert.ok(workflowCode('tender-stage2-requirements.json', 'parse-summary')
+    .includes("$('finalize-workload').first().json.value_breakdown"));
 });
 
 test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload classifications', async () => {
@@ -698,14 +910,14 @@ test('stage 2 workload parsing ignores safe extras and prompt-only reason length
   assert.equal('confidence' in positions[0], false);
 });
 
-test('stage 2 records complete and first-120-sample coverage at the paid-work boundary', async () => {
+test('stage 2 records complete classification coverage across the former sample boundary', async () => {
   for (const sourceTotal of [120, 121]) {
     const positions = Array.from({ length: sourceTotal }, (_, index) => ({
       id: `lot-position-${index + 1}`,
       short_text: `Position ${index + 1}`,
       unit: 'St',
     }));
-    const classifications = positions.slice(0, 120).map((_, index) => ({
+    const classifications = positions.map((_, index) => ({
       id: workloadClassificationKey(index),
       type: 'eigen',
       reason: 'Typische Eigenleistung',
@@ -738,12 +950,12 @@ test('stage 2 records complete and first-120-sample coverage at the paid-work bo
       saved_positions: breakdown.positions.length,
     }, {
       source_total: sourceTotal,
-      classified_total: 120,
-      unclassified_total: sourceTotal - 120,
-      mode: sourceTotal === 120 ? 'complete' : 'first_120_sample',
-      summary_total: 120,
-      eigen_count: 120,
-      saved_positions: 120,
+      classified_total: sourceTotal,
+      unclassified_total: 0,
+      mode: sourceTotal === 120 ? 'complete' : 'chunked_needs_merge',
+      summary_total: sourceTotal,
+      eigen_count: sourceTotal,
+      saved_positions: sourceTotal,
     });
   }
 });
