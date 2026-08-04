@@ -236,6 +236,53 @@ test('stage 1 GAEB rejects malformed metadata schemas', async () => {
   }
 });
 
+test('stage 1 preserves every GAEB position across large multi-lot archives', async () => {
+  const gaebFiles = [454, 454].map((count, lotIndex) => ({
+    file: `lot-${lotIndex + 1}.X83`,
+    metadata: { data_phase: '83' },
+    bill_of_quantities: {
+      total_items: count,
+      entries: Array.from({ length: count }, (_, itemIndex) => ({
+        type: 'item',
+        position: `${lotIndex + 1}.${String(itemIndex + 1).padStart(4, '0')}`,
+        short_text: `Lot ${lotIndex + 1} position ${itemIndex + 1}`,
+        quantity: itemIndex + 1,
+        unit: 'm',
+        category_path: [`Los ${lotIndex + 1}`],
+      })),
+    },
+  }));
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage1-gaeb.json', 'normalise') },
+    [{ json: {
+      tender_id: 'large-gaeb-tender',
+      org_id: 'org-id',
+      gaeb_files: gaebFiles,
+      archive_summary: {},
+      pdf_texts: {},
+    } }],
+    new Map(),
+  );
+  const output = result[0][0].json as {
+    item_count: number;
+    gaeb_positions: Array<{ id: string; category_path: string[] }>;
+  };
+
+  assert.equal(output.item_count, 908);
+  assert.equal(output.gaeb_positions.length, 908);
+  assert.deepEqual(output.gaeb_positions[0], {
+    id: '1.0001',
+    short_text: 'Lot 1 position 1',
+    long_text: '',
+    quantity: 1,
+    unit: 'm',
+    category_path: ['Los 1'],
+    gaeb_phase: 83,
+  });
+  assert.equal(output.gaeb_positions.at(-1)?.id, '2.0454');
+});
+
 test('stage 1 GAEB preserves valid metadata and structural fields', async () => {
   assert.ok(validGaebMetadata.title.length > 60);
   const normalised = {
