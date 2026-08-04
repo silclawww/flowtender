@@ -41,6 +41,83 @@ async function withImmediateRetryTimers(
   }
 }
 
+test('HTTP requests process a bounded item batch sequentially with per-item templates', async () => {
+  const requestBodies: string[] = [];
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+
+  await withFetch(async (_url, init) => {
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    const body = String(init?.body);
+    requestBodies.push(body);
+    await Promise.resolve();
+    activeRequests -= 1;
+    return Response.json({ echoed: JSON.parse(body) });
+  }, async () => {
+    const output = await httpRequestExecutor.execute(
+      { ...config, process_each_item: true, timeout_ms: 1_000 },
+      [
+        { json: { chunk: 1 } },
+        { json: { chunk: 2 } },
+        { json: { chunk: 3 } },
+      ],
+      new Map(),
+    );
+
+    assert.deepEqual(requestBodies, [
+      '{"chunk":1}',
+      '{"chunk":2}',
+      '{"chunk":3}',
+    ]);
+    assert.deepEqual(output[0].map(item => item.json), [
+      { echoed: { chunk: 1 } },
+      { echoed: { chunk: 2 } },
+      { echoed: { chunk: 3 } },
+    ]);
+    assert.equal(maxActiveRequests, 1);
+  });
+});
+
+test('HTTP requests reject oversized item batches before contacting the provider', async () => {
+  let calls = 0;
+
+  await withFetch(async () => {
+    calls += 1;
+    return Response.json({ ok: true });
+  }, async () => {
+    await assert.rejects(
+      () => httpRequestExecutor.execute(
+        { ...config, process_each_item: true, timeout_ms: 1_000 },
+        Array.from({ length: 11 }, (_, index) => ({ json: { chunk: index + 1 } })),
+        new Map(),
+      ),
+      /HTTP item batch too large/,
+    );
+  });
+
+  assert.equal(calls, 0);
+});
+
+test('HTTP requests retain first-item-only behavior unless batching is explicit', async () => {
+  const requestBodies: string[] = [];
+
+  await withFetch(async (_url, init) => {
+    requestBodies.push(String(init?.body));
+    return Response.json({ ok: true });
+  }, async () => {
+    const output = await httpRequestExecutor.execute(
+      { ...config, timeout_ms: 1_000 },
+      [{ json: { chunk: 1 } }, { json: { chunk: 2 } }],
+      new Map(),
+    );
+
+    assert.equal(output[0].length, 1);
+  });
+
+  assert.deepEqual(requestBodies, ['{"chunk":1}']);
+});
+
 test('Gemini 429 exhausts its bounded retries and fails the node', async () => {
   let calls = 0;
   const messages: string[] = [];
