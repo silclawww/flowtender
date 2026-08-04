@@ -73,9 +73,14 @@ async function executeWithRetry(
         const requestedWait = backoff === 'exponential'
           ? delayMs * Math.pow(2, attempt - 1)
           : delayMs * attempt;
-        const wait = Math.min(requestedWait, requireTimeRemaining());
+        const remaining = requireTimeRemaining();
+        const wait = Math.min(requestedWait, remaining);
         console.warn(`[runner] node retry ${attempt}/${maxAttempts}, waiting ${wait}ms...`);
         await new Promise(resolve => setTimeout(resolve, wait));
+        // A delay clipped to the workflow deadline cannot leave a valid retry
+        // window. Timers may fire a millisecond early on loaded runners, so do
+        // not let that scheduling jitter start another paid provider attempt.
+        if (requestedWait >= remaining) throw new WorkflowDeadlineError();
         requireTimeRemaining();
       }
     }
