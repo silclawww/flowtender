@@ -2038,6 +2038,41 @@ test('stage 3 derives score recommendations and aggregate counts deterministical
   }
 });
 
+test('stage 3 derives a consistent rationale and never recommends bid beside a high risk', async () => {
+  const contradictoryEvaluation = {
+    ...validEvaluationWithScoreDrivers,
+    strategic_fit_score: 82,
+    bid_recommendation: 'recommend_bid',
+    rationale: 'Alles ist zweifelsfrei erfüllt und es bestehen keine Risiken.',
+    risks: [{
+      id: 'RISK-001',
+      title: 'Abgabe gefährdet',
+      text: 'Die rechtzeitige Abgabe ist gefährdet.',
+      severity: 'high',
+      mitigation: 'Termin vor einer Entscheidung verbindlich prüfen.',
+    }],
+  };
+
+  const context = stage3Context();
+  const parsed = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(contradictoryEvaluation) }],
+    context,
+  );
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+    parsed[0],
+    context,
+  );
+
+  assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
+  assert.equal(
+    result[0][0].json.rationale,
+    'Strategischer Fit: 82 von 100. Empfehlung: Prüfen. Anforderungen: 1 erfüllt, 1 teilweise offen, 0 nicht erfüllt, 0 zu prüfen. Bestätigte Blocker: 0. Hohe Risiken: 1. Hauptfaktoren: REQ-001 (positiv), REQ-002 (offen).',
+  );
+  assert.doesNotMatch(String(result[0][0].json.rationale), /zweifelsfrei|keine Risiken/);
+});
+
 test('stage 3 ignores redundant fields and normalizes harmless model variation', async () => {
   const variableEvaluation = {
     strategic_fit_score: 70,
