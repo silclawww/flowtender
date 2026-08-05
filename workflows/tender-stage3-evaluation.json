@@ -17,7 +17,7 @@
       "name": "Load Requirements",
       "config": {
         "table": "tenders",
-        "select": "id, requirements, requirements_coverage, region, value_breakdown",
+        "select": "id, requirements, requirements_coverage, eligibility_requirements, region, value_breakdown",
         "filters": [
           {
             "column": "id",
@@ -55,6 +55,14 @@
       "name": "Prepare Eval Context",
       "config": {
         "code": "const tender = $('load-requirements').first().json;\nconst profile = $('load-company-profile').first().json || {};\nconst rawProjectReferences = Array.isArray(profile.project_references) ? profile.project_references : [];\nconst projectReferences = rawProjectReferences.filter((reference) =>\n  reference && typeof reference === 'object' &&\n  typeof reference.client === 'string' && reference.client.trim().length > 0 &&\n  typeof reference.project === 'string' && reference.project.trim().length > 0);\nconst projectReferencesState = projectReferences.length > 0\n  ? 'provided'\n  : profile.project_references_state === 'explicitly_absent'\n    ? 'explicitly_absent'\n    : 'not_provided';\n\n// Build company profile object for LLM\nconst companyProfile = {\n  name: profile.company_name || profile.name || 'Unbekanntes Unternehmen',\n  capabilities_summary: profile.capabilities_summary || '',\n  certifications: profile.certifications || [],\n  trades: profile.trades || [],\n  regions: profile.regions || [],\n  service_types: profile.service_types || [],\n  project_references: projectReferences,\n  project_references_state: projectReferencesState,\n  // HQ address for distance calculation (IMP-03b)\n  hq_street:      profile.hq_street      || null,\n  hq_postal_code: profile.hq_postal_code || null,\n  hq_city:        profile.hq_city        || null,\n};\n\nconst requirements = tender.requirements || [];\nconst referenceTerms = [\n  'referenzprojekt', 'referenzobjekt', 'referenzleistung', 'referenznachweis',\n  'vergleichbare projekte', 'vergleichbaren projekten', 'vergleichbare leistungen',\n];\nconst referenceRequirementIds = requirements.filter((requirement) => {\n  const text = [requirement?.title, requirement?.description]\n    .filter((value) => typeof value === 'string')\n    .join(' ')\n    .toLocaleLowerCase('de-DE');\n  return referenceTerms.some((term) => text.includes(term));\n}).map((requirement) => requirement.id);\nconst referenceEvidenceUnknownIds = projectReferencesState === 'not_provided'\n  ? referenceRequirementIds : [];\nconst referenceEvidenceAbsentIds = projectReferencesState === 'explicitly_absent'\n  ? referenceRequirementIds : [];\n\n// Bauort context for distance/travel risk assessment\nconst bauort = tender.region || null;\n\n// Wertschöpfungsanalyse — from stage 2 classification\nconst vb = tender.value_breakdown || null;\nconst valueBreakdownNote = vb ? (function() {\n  const s = vb.summary || {};\n  const total = s.total || 1;\n  const fremdPct = Math.round((s.fremd || 0) / total * 100);\n  const lieferPct = Math.round((s.liefer || 0) / total * 100);\n  const gemischtPct = Math.round((s.gemischt || 0) / total * 100);\n  const eigenPct = 100 - fremdPct - lieferPct - gemischtPct;\n  const parts = [];\n  if (eigenPct > 0)    parts.push(eigenPct + '% Eigenleistung (' + s.eigen + ' Pos.)');\n  if (fremdPct > 0)    parts.push(fremdPct + '% Fremdleistung (' + s.fremd + ' Pos.)');\n  if (lieferPct > 0)   parts.push(lieferPct + '% Lieferleistung (' + s.liefer + ' Pos.)');\n  if (gemischtPct > 0) parts.push(gemischtPct + '% Mischleistung (' + s.gemischt + ' Pos.)');\n  return parts.join(', ');\n})() : null;\nconst companyRegions = profile.regions || [];\n// Simple heuristic: flag if Bauort is not within any of the company's listed regions\n// e.g. company covers 'Bayern', Bauort is 'Nordrhein-Westfalen' → outside service area\nconst bauortOutsideRegions = bauort && companyRegions.length > 0\n  ? !companyRegions.some(r => bauort.toLowerCase().includes(r.toLowerCase()) || r.toLowerCase().includes(bauort.toLowerCase()))\n  : false;\n\nreturn [{ json: {\n  tender_id: tender.id,\n  company_profile: companyProfile,\n  requirements,\n  requirements_json: JSON.stringify(requirements),\n  reference_evidence_unknown_ids: referenceEvidenceUnknownIds,\n  reference_evidence_absent_ids: referenceEvidenceAbsentIds,\n  bauort,\n  bauort_outside_regions: bauortOutsideRegions,\n  company_regions_str: companyRegions.join(', ') || 'nicht angegeben',\n  value_breakdown_note: valueBreakdownNote,\n} }];"
+      }
+    },
+    {
+      "id": "attach-requirement-evidence",
+      "type": "code",
+      "name": "Attach Exact Requirement Evidence",
+      "config": {
+        "code": "const evidence = Array.isArray($('trigger').first().json.requirement_evidence)\n  ? $('trigger').first().json.requirement_evidence : [];\nconst requirements = Array.isArray($json.requirements) ? $json.requirements : [];\nconst knownIds = new Set(requirements.map((requirement) => requirement?.id));\nconst statuses = new Set(['pending', 'in_progress', 'verified', 'not_applicable']);\nconst boundedOptional = (value, maxLength) => value === null ||\n  (typeof value === 'string' && value.length <= maxLength);\nif (evidence.length > 25 || knownIds.size !== requirements.length) throw new Error('INVALID_REQUIREMENT_EVIDENCE');\nconst byId = new Map();\nlet evidenceCutoffAt = null;\nlet evidenceCutoffTime = -Infinity;\nconst notApplicableIds = [];\nfor (const item of evidence) {\n  const updatedTime = Date.parse(item?.updated_at);\n  if (!item || typeof item !== 'object' || Array.isArray(item) ||\n    typeof item.requirement_id !== 'string' || !knownIds.has(item.requirement_id) ||\n    byId.has(item.requirement_id) || !statuses.has(item.status) ||\n    !boundedOptional(item.note, 2000) || !boundedOptional(item.cert_reference, 500) ||\n    !boundedOptional(item.cert_expiry, 10) || !Number.isFinite(updatedTime)) {\n    throw new Error('INVALID_REQUIREMENT_EVIDENCE');\n  }\n  byId.set(item.requirement_id, item);\n  if (updatedTime > evidenceCutoffTime) {\n    evidenceCutoffTime = updatedTime;\n    evidenceCutoffAt = item.updated_at;\n  }\n  if (item.status === 'not_applicable') notApplicableIds.push(item.requirement_id);\n}\nconst enrichedRequirements = requirements.map((requirement) => {\n  const item = byId.get(requirement.id);\n  return item?.status === 'verified'\n    ? { ...requirement, customer_evidence: {\n        status: 'verified',\n        note: item.note,\n        cert_reference: item.cert_reference,\n        cert_expiry: item.cert_expiry,\n      } }\n    : requirement;\n});\nreturn [{ json: {\n  ...$json,\n  requirements: enrichedRequirements,\n  requirements_json: JSON.stringify(enrichedRequirements),\n  not_applicable_evidence_ids: notApplicableIds,\n  evidence_cutoff_at: evidenceCutoffAt,\n} }];"
       }
     },
     {
@@ -155,6 +163,30 @@
       }
     },
     {
+      "id": "attach-evidence-to-repair",
+      "type": "code",
+      "name": "Attach Evidence to Repair Sources",
+      "config": {
+        "code": "const enriched = JSON.parse($('attach-requirement-evidence').first().json.requirements_json || '[]');\nconst byId = new Map(enriched.map((requirement) => [requirement.id, requirement]));\nconst sources = Array.isArray($json.reconciliation_source_requirements)\n  ? $json.reconciliation_source_requirements : [];\nreturn [{ json: {\n  ...$json,\n  reconciliation_source_requirements: sources.map((source) => byId.get(source.id) || source),\n} }];"
+      }
+    },
+    {
+      "id": "apply-requirement-evidence-policy",
+      "type": "code",
+      "name": "Apply Requirement Evidence Policy",
+      "config": {
+        "code": "const notApplicableIds = new Set(\n  Array.isArray($('attach-requirement-evidence').first().json.not_applicable_evidence_ids)\n    ? $('attach-requirement-evidence').first().json.not_applicable_evidence_ids : []\n);\nlet previous = $('load-requirements').first().json.eligibility_requirements;\nif (typeof previous === 'string') {\n  try { previous = JSON.parse(previous); } catch { previous = []; }\n}\nconst validStatuses = new Set(['compliant', 'partial', 'needs_review', 'not_met']);\nconst previousById = new Map(\n  (Array.isArray(previous) ? previous : [])\n    .filter((item) => item && typeof item.id === 'string' &&\n      validStatuses.has(item.status) && typeof item.is_blocking === 'boolean')\n    .map((item) => [item.id, item])\n);\nconst current = Array.isArray($json.eligibility_requirements) ? $json.eligibility_requirements : [];\nconst requirements = current.map((item) => {\n  if (!notApplicableIds.has(item?.id)) return item;\n  const prior = previousById.get(item.id);\n  if (!prior) return {\n    id: item.id,\n    status: 'needs_review',\n    is_blocking: false,\n    review_reason: 'Nicht zutreffend muss anhand der Quellanforderung geprüft werden.',\n  };\n  return {\n    id: prior.id,\n    status: prior.status,\n    is_blocking: prior.status === 'not_met' && prior.is_blocking === true,\n    ...(typeof prior.review_reason === 'string' && prior.review_reason.length <= 500\n      ? { review_reason: prior.review_reason } : {}),\n  };\n});\nreturn [{ json: { ...$json, eligibility_requirements: requirements } }];"
+      }
+    },
+    {
+      "id": "attach-evaluation-metadata",
+      "type": "code",
+      "name": "Attach Evaluation Metadata",
+      "config": {
+        "code": "const summary = $json.eligibility_summary && typeof $json.eligibility_summary === 'object'\n  && !Array.isArray($json.eligibility_summary) ? $json.eligibility_summary : {};\nconst cutoff = $('attach-requirement-evidence').first().json.evidence_cutoff_at;\nreturn [{ json: {\n  ...$json,\n  eligibility_summary: {\n    ...summary,\n    evaluated_at: new Date().toISOString(),\n    evidence_cutoff_at: typeof cutoff === 'string' ? cutoff : null,\n  },\n} }];"
+      }
+    },
+    {
       "id": "save-evaluation",
       "type": "supabase.update",
       "name": "Save Evaluation",
@@ -223,6 +255,11 @@
     {
       "from": "prepare-context",
       "from_output": 0,
+      "to": "attach-requirement-evidence"
+    },
+    {
+      "from": "attach-requirement-evidence",
+      "from_output": 0,
       "to": "geocode-distance"
     },
     {
@@ -252,6 +289,11 @@
     },
     {
       "from": "route-evaluation-reconciliation",
+      "from_output": 0,
+      "to": "attach-evidence-to-repair"
+    },
+    {
+      "from": "attach-evidence-to-repair",
       "from_output": 0,
       "to": "reconcile-evaluation-llm"
     },
@@ -283,15 +325,25 @@
     {
       "from": "parse-evaluation",
       "from_output": 0,
-      "to": "finalize-evaluation"
+      "to": "apply-requirement-evidence-policy"
     },
     {
       "from": "build-review-fallback",
+      "from_output": 0,
+      "to": "apply-requirement-evidence-policy"
+    },
+    {
+      "from": "apply-requirement-evidence-policy",
       "from_output": 0,
       "to": "finalize-evaluation"
     },
     {
       "from": "finalize-evaluation",
+      "from_output": 0,
+      "to": "attach-evaluation-metadata"
+    },
+    {
+      "from": "attach-evaluation-metadata",
       "from_output": 0,
       "to": "save-evaluation"
     }

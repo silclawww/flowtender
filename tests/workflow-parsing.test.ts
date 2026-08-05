@@ -1458,8 +1458,10 @@ test('stage 3 routes one safe invalid draft through evidence-grounded reconcilia
       .filter((edge) => edge.from === 'route-evaluation-reconciliation')
       .map((edge) => [edge.from_output, edge.to])
       .sort((left, right) => Number(left[0]) - Number(right[0])),
-    [[0, 'reconcile-evaluation-llm'], [1, 'parse-evaluation']],
+    [[0, 'attach-evidence-to-repair'], [1, 'parse-evaluation']],
   );
+  assert.ok(workflow.edges.some((edge) =>
+    edge.from === 'attach-evidence-to-repair' && edge.to === 'reconcile-evaluation-llm'));
 
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.GEMINI_API_KEY;
