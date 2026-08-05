@@ -174,6 +174,39 @@ test('Stage 3 marks missing reference evidence as unknown company context', asyn
   assert.deepEqual(output.reference_evidence_unknown_ids, ['REQ-001']);
 });
 
+test('Stage 3 distinguishes explicitly absent references from unknown and provided evidence', async () => {
+  type PreparedReferenceContext = {
+    company_profile: { project_references_state: string };
+    reference_evidence_unknown_ids: string[];
+    reference_evidence_absent_ids: string[];
+  };
+  const requirement = { id: 'REQ-001', title: 'Referenzobjekte der letzten fünf Jahre', description: '' };
+  const run = async (profile: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    new Map([
+      ['load-requirements', [{ json: { id: 'tender-id', requirements: [requirement], region: 'München' } }]],
+      ['load-company-profile', [{ json: profile }]],
+    ]),
+  );
+
+  const absent = (await run({
+    project_references: [],
+    project_references_state: 'explicitly_absent',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(absent.company_profile.project_references_state, 'explicitly_absent');
+  assert.deepEqual(absent.reference_evidence_unknown_ids, []);
+  assert.deepEqual(absent.reference_evidence_absent_ids, ['REQ-001']);
+
+  const provided = (await run({
+    project_references_state: 'not_provided',
+    project_references: [{ client: 'Stadt A', project: 'Kanalbau A' }],
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(provided.company_profile.project_references_state, 'provided');
+  assert.deepEqual(provided.reference_evidence_unknown_ids, []);
+  assert.deepEqual(provided.reference_evidence_absent_ids, []);
+});
+
 const validPdfMetadata = {
   title: 'Brückensanierung Augsburg',
   summary: 'Die Ausschreibung umfasst die Sanierung einer Straßenbrücke.',
@@ -1227,6 +1260,57 @@ test('stage 3 cannot turn an unprovided reference profile into a red failure', a
     status: 'needs_review',
     is_blocking: false,
     review_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
+  });
+});
+
+test('stage 3 turns an explicit absence into a truthful unmet reference requirement', async () => {
+  const evaluation = {
+    ...validEvaluation,
+    strategic_fit_score: 45,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'needs_review', is_blocking: false },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+    score_drivers: [
+      { id: 'REQ-001', direction: 'uncertain', explanation: 'Referenznachweis ist offen.' },
+    ],
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [
+        { id: 'REQ-001', title: 'Referenzobjekte', is_critical: true },
+        { id: 'REQ-002', title: 'ISO 9001', is_critical: false },
+      ],
+      requirements_coverage: completeRequirementsCoverage(),
+    } }]],
+    ['prepare-context', [{ json: {
+      reference_evidence_unknown_ids: [],
+      reference_evidence_absent_ids: ['REQ-001'],
+    } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(evaluation) }],
+    context,
+  );
+  const output = result[0][0].json as {
+    bid_recommendation: string;
+    eligibility_requirements: Array<Record<string, unknown>>;
+  };
+  assert.equal(output.bid_recommendation, 'recommend_no_bid');
+  assert.deepEqual(output.eligibility_requirements[0], {
+    id: 'REQ-001',
+    status: 'not_met',
+    is_blocking: true,
+    review_reason: 'Das Unternehmen hat ausdrücklich angegeben, dass keine Referenzprojekte vorliegen.',
+    score_driver: {
+      direction: 'negative',
+      explanation: 'Referenznachweis ist offen.',
+      rank: 0,
+    },
   });
 });
 
