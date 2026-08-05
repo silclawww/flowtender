@@ -128,12 +128,24 @@ test('Stage 3 geocoding falls back to the company postal code when the exact loc
       '83661, Deutschland',
     ]);
     assert.equal(typeof result[0]?.[0]?.json.distance_km, 'number');
-    const note = String(result[0]?.[0]?.json.distance_note);
-    assert.match(note, /Fahrtstrecke geschätzt/);
-    assert.ok(note.indexOf('Fahrtstrecke geschätzt') < note.indexOf('Luftlinie'));
+    assert.deepEqual(JSON.parse(String(result[0]?.[0]?.json.distance_note)), {
+      status: 'estimated',
+      estimated_route_km: 66,
+      straight_line_km: 51,
+      origin: 'Lenggries-Schlegldorf',
+      destination: 'München',
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Stage 3 distance output contains structured data rather than delimiter-chain prose', () => {
+  const code = workflowCode('tender-stage3-evaluation.json', 'geocode-distance');
+  const productCode = code.replace(/^\s*\/\/.*$/gm, '');
+
+  assert.match(code, /JSON\.stringify\(\{[\s\S]*estimated_route_km/);
+  assert.doesNotMatch(productCode, /\s(?:—|·)\s/);
 });
 
 test('Stage 3 keeps distance informational and outside the evaluation prompt', () => {
