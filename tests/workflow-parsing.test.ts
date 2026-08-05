@@ -1148,6 +1148,14 @@ const validEvaluation = {
   ],
 };
 
+const validEvaluationWithScoreDrivers = {
+  ...validEvaluation,
+  score_drivers: [
+    { id: 'REQ-001', direction: 'positive', explanation: 'Die Zertifizierung ist belegt.' },
+    { id: 'REQ-002', direction: 'uncertain', explanation: 'Der spezifische Nachweis ist noch offen.' },
+  ],
+};
+
 const allCompliantEvaluation = {
   ...validEvaluation,
   eligibility_summary: { compliant_count: 2, partial_count: 0, not_met_count: 0, blocking_issues: 0 },
@@ -1222,6 +1230,69 @@ test('stage 3 cannot turn an unprovided reference profile into a red failure', a
   });
 });
 
+test('stage 3 persists only bounded score drivers grounded in exact requirement IDs', async () => {
+  const evaluation = {
+    ...validEvaluation,
+    score_drivers: [
+      {
+        id: 'REQ-002',
+        direction: 'uncertain',
+        explanation: 'Der spezifische Nachweis muss noch geprüft werden.',
+      },
+      {
+        id: 'REQ-001',
+        direction: 'positive',
+        explanation: 'Die Zertifizierung ist im Profil ausdrücklich belegt.',
+      },
+    ],
+  };
+  const context: ExecutionContext = new Map([
+    ...stage3Context(),
+    ['prepare-context', [{ json: { reference_evidence_unknown_ids: [] } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(evaluation) }],
+    context,
+  );
+  const requirements = result[0][0].json.eligibility_requirements as Array<Record<string, unknown>>;
+
+  assert.deepEqual(requirements[0].score_driver, {
+    direction: 'positive',
+    explanation: 'Die Zertifizierung ist im Profil ausdrücklich belegt.',
+    rank: 1,
+  });
+  assert.deepEqual(requirements[1].score_driver, {
+    direction: 'uncertain',
+    explanation: 'Der spezifische Nachweis muss noch geprüft werden.',
+    rank: 0,
+  });
+});
+
+test('stage 3 sends contradictory or unknown score drivers through one reconciliation', async () => {
+  const evaluation = {
+    ...validEvaluation,
+    score_drivers: [
+      { id: 'REQ-001', direction: 'negative', explanation: 'Widerspricht dem erfüllten Status.' },
+      { id: 'REQ-UNKNOWN', direction: 'negative', explanation: 'Darf nicht erfunden werden.' },
+    ],
+  };
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
+    [{ json: llmResponse(evaluation) }],
+    stage3Context(),
+  );
+  const findings = result[0][0].json.reconciliation_findings as Array<{ path: string }>;
+
+  assert.equal(result[0][0].json.reconciliation_required, true);
+  assert.deepEqual(findings.map((finding) => finding.path), [
+    'score_drivers[0].direction',
+    'score_drivers[1].id',
+  ]);
+});
+
 function stage3Context(): ExecutionContext {
   return new Map([
     ['load-requirements', [{ json: {
@@ -1239,13 +1310,13 @@ function stage3Context(): ExecutionContext {
 test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
   const valid = await codeExecutor.execute(
     { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
-    [{ json: llmResponse(validEvaluation) }],
+    [{ json: llmResponse(validEvaluationWithScoreDrivers) }],
     stage3Context(),
   );
   assert.equal(valid[0][0].json.reconciliation_required, false);
 
   const invalidDraft = {
-    ...validEvaluation,
+    ...validEvaluationWithScoreDrivers,
     strategic_fit_score: '82',
     eligibility_requirements: [
       { id: 'REQ-001', status: 'fulfilled', is_blocking: false },
@@ -1300,7 +1371,7 @@ test('stage 3 routes one safe invalid draft through evidence-grounded reconcilia
   process.env.GEMINI_API_KEY = 'test-key';
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
     requests.push({ body: typeof init?.body === 'string' ? init.body : undefined });
-    return new Response(JSON.stringify(llmResponse(validEvaluation)), {
+    return new Response(JSON.stringify(llmResponse(validEvaluationWithScoreDrivers)), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
