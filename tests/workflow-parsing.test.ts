@@ -143,6 +143,37 @@ test('Stage 3 keeps distance informational and outside the evaluation prompt', (
   assert.doesNotMatch(body, /Entfernung über|Anfahrtskosten|Unterbringung|Logistikaufwand/);
 });
 
+test('Stage 3 marks missing reference evidence as unknown company context', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [
+        { id: 'REQ-001', title: 'Referenzobjekte der letzten fünf Jahre', description: '' },
+        { id: 'REQ-002', title: 'ISO 9001', description: '' },
+      ],
+      region: 'München',
+      value_breakdown: null,
+    } }]],
+    ['load-company-profile', [{ json: {
+      name: 'Test GmbH',
+      project_references: [{ client: '', project: '', description: 'Unvollständiger Entwurf' }],
+    } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    context,
+  );
+
+  const output = result[0][0].json as {
+    company_profile: { project_references_state: string };
+    reference_evidence_unknown_ids: string[];
+  };
+  assert.equal(output.company_profile.project_references_state, 'not_provided');
+  assert.deepEqual(output.reference_evidence_unknown_ids, ['REQ-001']);
+});
+
 const validPdfMetadata = {
   title: 'Brückensanierung Augsburg',
   summary: 'Die Ausschreibung umfasst die Sanierung einer Straßenbrücke.',
@@ -1141,6 +1172,55 @@ async function evaluateStage3(requirements: unknown, coverage: unknown) {
     context,
   );
 }
+
+test('stage 3 cannot turn an unprovided reference profile into a red failure', async () => {
+  const referenceEvaluation = {
+    ...validEvaluation,
+    strategic_fit_score: 45,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'not_met', is_blocking: true },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [
+        { id: 'REQ-001', title: 'Referenzobjekte', is_critical: true },
+        { id: 'REQ-002', title: 'ISO 9001', is_critical: false },
+      ],
+      requirements_coverage: completeRequirementsCoverage(),
+    } }]],
+    ['prepare-context', [{ json: { reference_evidence_unknown_ids: ['REQ-001'] } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(referenceEvaluation) }],
+    context,
+  );
+  const output = result[0][0].json as {
+    bid_recommendation: string;
+    eligibility_summary: Record<string, number>;
+    eligibility_requirements: Array<Record<string, unknown>>;
+  };
+
+  assert.equal(output.bid_recommendation, 'needs_review');
+  assert.deepEqual(output.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 0,
+    needs_review_count: 1,
+    blocking_issues: 0,
+  });
+  assert.deepEqual(output.eligibility_requirements[0], {
+    id: 'REQ-001',
+    status: 'needs_review',
+    is_blocking: false,
+    review_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
+  });
+});
 
 function stage3Context(): ExecutionContext {
   return new Map([
