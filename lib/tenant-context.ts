@@ -177,6 +177,8 @@ function boundedClone(
 export function preflightWorkflowPayload(
   workflowId: string,
   payload: unknown,
+  configuredAllowedOrgId = process.env.FLOWTENDER_ALLOWED_ORG_ID,
+  configuredVercelEnvironment = process.env.VERCEL_ENV,
 ): WorkflowPayloadPreflight {
   const operation = WORKFLOW_OPERATIONS.get(workflowId);
   const root = isPlainObject(payload) ? payload : null;
@@ -195,6 +197,9 @@ export function preflightWorkflowPayload(
     admission_id: canonicalUuid(dataProperty(root, 'admission_id'), wrapped ? dataProperty(wrapped, 'admission_id') : undefined),
     operation,
   };
+  const allowedOrgId = configuredAllowedOrgId?.trim().toLowerCase();
+  if (configuredVercelEnvironment === 'preview' && !allowedOrgId) invalidTenantContext();
+  if (allowedOrgId && trustedContext.org_id !== allowedOrgId) invalidTenantContext();
   return { source: wrapped ?? root, trustedContext };
 }
 

@@ -122,6 +122,32 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
   }
 });
 
+test('configured preview organisation rejects other tenants before workflow work', () => {
+  const payload = {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+  };
+
+  assert.equal(
+    preflightWorkflowPayload('tender-stage2-requirements', payload, orgId).trustedContext?.org_id,
+    orgId,
+  );
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage2-requirements', payload, otherOrgId),
+    (error: unknown) => {
+      assert.equal((error as { status?: number }).status, 503);
+      assert.equal((error as { code?: string }).code, 'ADMISSION_UNAVAILABLE');
+      return true;
+    },
+  );
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage2-requirements', payload, undefined, 'preview'),
+    /ADMISSION_UNAVAILABLE/,
+  );
+});
+
 test('Stage 1 keeps source data but recursively strips actor and lease fields', () => {
   for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
     assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {
