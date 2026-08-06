@@ -122,6 +122,68 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
   }
 });
 
+test('Stage 3 carries only validated evidence for an explicit re-evaluation', () => {
+  const requirementEvidence = [{
+    requirement_id: 'REQ-001',
+    status: 'verified',
+    note: 'Freigabe liegt vor',
+    cert_reference: null,
+    cert_expiry: null,
+    updated_at: '2026-08-05T20:00:00.000Z',
+  }];
+  const preflight = preflightWorkflowPayload('tender-stage3-evaluation', {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+    requirement_evidence: requirementEvidence,
+  });
+
+  assert.equal(preflight.trustedContext?.evaluation_reason, 'evidence_changes');
+  assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight), {
+    workflowId: 'tender-stage3-evaluation',
+    payload: { tender_id: tenderId, org_id: orgId, requirement_evidence: requirementEvidence },
+  });
+});
+
+test('Stage 3 rejects malformed evidence before admission or state mutation', () => {
+  const valid = {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+  };
+  for (const requirement_evidence of [
+    [{ requirement_id: 'REQ-001', status: 'verified' }],
+    [{
+      requirement_id: 'REQ-001',
+      status: 'customer-controlled',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    }],
+    Array.from({ length: 26 }, (_, index) => ({
+      requirement_id: `REQ-${index}`,
+      status: 'verified',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    })),
+  ]) {
+    assert.throws(
+      () => preflightWorkflowPayload('tender-stage3-evaluation', {
+        ...valid,
+        requirement_evidence,
+      }),
+      /INVALID_WORKFLOW_PAYLOAD/,
+    );
+  }
+});
+
 test('configured preview organisation rejects other tenants before workflow work', () => {
   const payload = {
     tender_id: tenderId,

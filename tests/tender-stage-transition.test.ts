@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  claimTenderEvidenceReevaluation,
   claimTenderProcessingStage,
   TenderStagePersistenceError,
   TenderStageTransitionError,
@@ -30,6 +31,63 @@ test('each stage claim forwards exact dual-ID transition input', async () => {
         p_is_retry: stage === 'stage3',
       },
     });
+  }
+});
+
+test('evidence re-evaluation atomically claims one completed tender', async () => {
+  const call: Record<string, unknown> = {};
+  const filters: Array<[string, unknown]> = [];
+  const builder = {
+    eq(column: string, value: unknown) { filters.push([column, value]); return this; },
+    async select(columns: string) {
+      call.select = columns;
+      return { data: [{ id: tenderId, processing_status: 'evaluating' }], error: null };
+    },
+  };
+
+  await claimTenderEvidenceReevaluation({
+    from(table: string) {
+      call.table = table;
+      return {
+        update(values: Record<string, unknown>) { call.update = values; return builder; },
+      };
+    },
+  }, { tenderId, orgId, startedAt: '2026-08-05T20:02:00.000Z' });
+
+  assert.deepEqual(call, {
+    table: 'tenders',
+    update: {
+      processing_status: 'evaluating',
+      processing_stage: 'stage3',
+      processing_started_at: '2026-08-05T20:02:00.000Z',
+      processing_error_code: null,
+      processing_error_at: null,
+      processing_correlation_id: null,
+    },
+    select: 'id,processing_status',
+  });
+  assert.deepEqual(filters, [
+    ['id', tenderId],
+    ['org_id', orgId],
+    ['processing_status', 'complete'],
+  ]);
+});
+
+test('lost and malformed re-evaluation claims fail before paid work', async () => {
+  for (const [result, ErrorType] of [
+    [{ data: [], error: null }, TenderStageTransitionError],
+    [{ data: null, error: { message: 'secret database detail' } }, TenderStagePersistenceError],
+  ] as const) {
+    const builder = {
+      eq() { return this; },
+      async select() { return result; },
+    };
+    await assert.rejects(
+      claimTenderEvidenceReevaluation({
+        from() { return { update() { return builder; } }; },
+      }, { tenderId, orgId, startedAt: '2026-08-05T20:02:00.000Z' }),
+      (error: unknown) => error instanceof ErrorType && !String(error).includes('secret'),
+    );
   }
 });
 

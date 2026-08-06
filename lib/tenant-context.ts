@@ -24,11 +24,22 @@ export interface TrustedAdmissionContext {
   user_id: string;
   admission_id: string;
   operation: AdmissionOperation;
+  evaluation_reason?: 'evidence_changes';
 }
+
+type RequirementEvidence = {
+  requirement_id: string;
+  status: 'pending' | 'in_progress' | 'verified' | 'not_applicable';
+  note: string | null;
+  cert_reference: string | null;
+  cert_expiry: string | null;
+  updated_at: string;
+};
 
 export interface WorkflowPayloadPreflight {
   source: Record<string, unknown>;
   trustedContext: TrustedAdmissionContext | null;
+  requirementEvidence?: RequirementEvidence[];
 }
 
 export interface MaterializedWorkflowPayload {
@@ -83,6 +94,57 @@ function canonicalUuid(directValue: unknown, wrappedValue: unknown): string {
   const wrapped = optionalUuid(wrappedValue);
   if (direct && wrapped && direct !== wrapped) invalidTenantContext();
   return wrapped ?? direct ?? invalidTenantContext();
+}
+
+function evaluationReason(directValue: unknown, wrappedValue: unknown): 'evidence_changes' | undefined {
+  const direct = directValue === undefined ? undefined
+    : directValue === 'evidence_changes' ? directValue : invalidPayload();
+  const wrapped = wrappedValue === undefined ? undefined
+    : wrappedValue === 'evidence_changes' ? wrappedValue : invalidPayload();
+  if (direct && wrapped && direct !== wrapped) invalidPayload();
+  return wrapped ?? direct;
+}
+
+function nullableString(value: unknown, maxLength: number): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === 'string' && value.length <= maxLength ? value : undefined;
+}
+
+function requirementEvidence(value: unknown): RequirementEvidence[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 25) invalidPayload();
+  const seen = new Set<string>();
+  return value.map((raw) => {
+    if (!isPlainObject(raw)
+      || Object.keys(raw).sort().join(',')
+        !== 'cert_expiry,cert_reference,note,requirement_id,status,updated_at') invalidPayload();
+    const requirementId = dataProperty(raw, 'requirement_id');
+    const status = dataProperty(raw, 'status');
+    const note = nullableString(dataProperty(raw, 'note'), 2000);
+    const certReference = nullableString(dataProperty(raw, 'cert_reference'), 500);
+    const certExpiry = nullableString(dataProperty(raw, 'cert_expiry'), 10);
+    const updatedAt = dataProperty(raw, 'updated_at');
+    if (typeof requirementId !== 'string'
+      || requirementId.length === 0
+      || requirementId.length > 100
+      || seen.has(requirementId)
+      || typeof status !== 'string'
+      || !['pending', 'in_progress', 'verified', 'not_applicable'].includes(status)
+      || note === undefined
+      || certReference === undefined
+      || certExpiry === undefined
+      || typeof updatedAt !== 'string'
+      || !Number.isFinite(Date.parse(updatedAt))) invalidPayload();
+    seen.add(requirementId);
+    return {
+      requirement_id: requirementId,
+      status: status as RequirementEvidence['status'],
+      note,
+      cert_reference: certReference,
+      cert_expiry: certExpiry,
+      updated_at: updatedAt,
+    };
+  });
 }
 
 function utf8Bytes(value: string): number {
@@ -190,17 +252,27 @@ export function preflightWorkflowPayload(
 
   const bodyValue = dataProperty(root, 'body');
   const wrapped = bodyValue === undefined ? null : isPlainObject(bodyValue) ? bodyValue : invalidTenantContext();
+  const reason = evaluationReason(
+    dataProperty(root, 'evaluation_reason'),
+    wrapped ? dataProperty(wrapped, 'evaluation_reason') : undefined,
+  );
+  if (reason && operation !== 'stage3') invalidPayload();
+  const businessSource = wrapped ?? root;
+  const evidenceValue = dataProperty(businessSource, 'requirement_evidence');
+  if (evidenceValue !== undefined && operation !== 'stage3') invalidPayload();
+  const evidence = operation === 'stage3' ? requirementEvidence(evidenceValue) : undefined;
   const trustedContext: TrustedAdmissionContext = {
     tender_id: canonicalUuid(dataProperty(root, 'tender_id'), wrapped ? dataProperty(wrapped, 'tender_id') : undefined),
     org_id: canonicalUuid(dataProperty(root, 'org_id'), wrapped ? dataProperty(wrapped, 'org_id') : undefined),
     user_id: canonicalUuid(dataProperty(root, 'user_id'), wrapped ? dataProperty(wrapped, 'user_id') : undefined),
     admission_id: canonicalUuid(dataProperty(root, 'admission_id'), wrapped ? dataProperty(wrapped, 'admission_id') : undefined),
     operation,
+    ...(reason ? { evaluation_reason: reason } : {}),
   };
   const allowedOrgId = configuredAllowedOrgId?.trim().toLowerCase();
   if (configuredVercelEnvironment === 'preview' && !allowedOrgId) invalidTenantContext();
   if (allowedOrgId && trustedContext.org_id !== allowedOrgId) invalidTenantContext();
-  return { source: wrapped ?? root, trustedContext };
+  return { source: businessSource, trustedContext, requirementEvidence: evidence };
 }
 
 export function materializeWorkflowPayload(
@@ -217,7 +289,13 @@ export function materializeWorkflowPayload(
   if (context.operation !== 'upload') {
     return {
       workflowId,
-      payload: { tender_id: context.tender_id, org_id: context.org_id },
+      payload: {
+        tender_id: context.tender_id,
+        org_id: context.org_id,
+        ...(context.operation === 'stage3' && preflight.requirementEvidence
+          ? { requirement_evidence: preflight.requirementEvidence }
+          : {}),
+      },
     };
   }
 
