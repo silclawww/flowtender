@@ -30,6 +30,7 @@ import {
 } from '../retry-errors.ts';
 import {
   canonicalProcessingStage,
+  claimTenderEvidenceReevaluation,
   claimTenderProcessingStage,
   persistTenderFailure,
 } from '../tender-failure-persistence.ts';
@@ -162,12 +163,23 @@ export class WorkflowRunner {
 
     try {
       if (preflight.trustedContext) {
-        await claimTenderProcessingStage(this.supabase as unknown as Parameters<typeof claimTenderProcessingStage>[0], {
-          tenderId: preflight.trustedContext.tender_id,
-          orgId: preflight.trustedContext.org_id,
-          stage: canonicalProcessingStage(preflight.trustedContext.operation),
-          isRetry: Boolean(options.retryRootExecutionId),
-        });
+        if (preflight.trustedContext.evaluation_reason === 'evidence_changes'
+          && !options.retryRootExecutionId) {
+          await claimTenderEvidenceReevaluation(
+            this.supabase as unknown as Parameters<typeof claimTenderEvidenceReevaluation>[0],
+            {
+              tenderId: preflight.trustedContext.tender_id,
+              orgId: preflight.trustedContext.org_id,
+            },
+          );
+        } else {
+          await claimTenderProcessingStage(this.supabase as unknown as Parameters<typeof claimTenderProcessingStage>[0], {
+            tenderId: preflight.trustedContext.tender_id,
+            orgId: preflight.trustedContext.org_id,
+            stage: canonicalProcessingStage(preflight.trustedContext.operation),
+            isRetry: Boolean(options.retryRootExecutionId),
+          });
+        }
       }
 
       // Business payload traversal is deliberately deferred until the durable
