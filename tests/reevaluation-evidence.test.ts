@@ -102,6 +102,47 @@ test('not-applicable evidence cannot replace a prior blocker or invent complianc
   ]);
 });
 
+test('withdrawn evidence is not proof and does not preserve a prior positive judgment', async () => {
+  const context: ExecutionContext = new Map([
+    ['trigger', [{ json: {
+      requirement_evidence: [{
+        requirement_id: 'REQ-001',
+        status: 'pending',
+        note: null,
+        cert_reference: null,
+        cert_expiry: null,
+        updated_at: '2026-08-06T01:00:00.000Z',
+      }],
+    } }]],
+    ['load-requirements', [{ json: {
+      eligibility_requirements: [{ id: 'REQ-001', status: 'compliant', is_blocking: false }],
+    } }]],
+  ]);
+  const prepared = await run('attach-requirement-evidence', {
+    requirements: [{ id: 'REQ-001', title: 'Freigabe', is_critical: false }],
+  }, context);
+  const requirements = JSON.parse(String(prepared.requirements_json));
+
+  assert.equal('customer_evidence' in requirements[0], false);
+  assert.equal(prepared.evidence_cutoff_at, '2026-08-06T01:00:00.000Z');
+  context.set('attach-requirement-evidence', [{ json: prepared }]);
+  const result = await run('apply-requirement-evidence-policy', {
+    eligibility_requirements: [{
+      id: 'REQ-001',
+      status: 'needs_review',
+      is_blocking: false,
+      review_reason: 'Nachweis wurde zurückgezogen.',
+    }],
+  }, context);
+
+  assert.deepEqual(result.eligibility_requirements, [{
+    id: 'REQ-001',
+    status: 'needs_review',
+    is_blocking: false,
+    review_reason: 'Nachweis wurde zurückgezogen.',
+  }]);
+});
+
 test('the final saved summary identifies evaluation time and exact evidence snapshot', async () => {
   const context: ExecutionContext = new Map([
     ['attach-requirement-evidence', [{ json: {
