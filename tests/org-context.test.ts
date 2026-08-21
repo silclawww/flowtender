@@ -108,6 +108,20 @@ test('stage 2 scopes every privileged tender read and update to both IDs', () =>
   }
 });
 
+test('stage 2 loads only the company profile for the verified organisation', () => {
+  const workflow = loadWorkflow('tender-stage2-requirements.json');
+  const profileLoad = node(workflow, 'load-company-profile');
+
+  assert.equal(profileLoad.type, 'supabase.query');
+  assert.equal(profileLoad.config.table, 'company_profiles');
+  assert.equal(profileLoad.config.single, true);
+  assert.deepEqual(profileLoad.config.filters, [{
+    column: 'org_id',
+    operator: 'eq',
+    value: "{{ $('trigger').first().json.org_id }}",
+  }]);
+});
+
 test('stage 3 scopes tender access to both IDs and loads the verified org profile', () => {
   const workflow = loadWorkflow('tender-stage3-evaluation.json');
   const tenderOperations = workflow.nodes.filter((candidate) =>

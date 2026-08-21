@@ -566,6 +566,45 @@ test('stage 2 prepares every source position as bounded globally keyed chunks', 
   assert.equal(chunks[7].positions.at(-1)?.id, 'POS-908');
 });
 
+test('stage 2 uses bounded company-profile context without requesting item-level reasoning', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: workloadPositions } }]],
+    ['load-company-profile', [{ json: {
+      name: 'Beispiel Tiefbau GmbH',
+      trades: ['Tiefbau', 'Wasserbau'],
+      trade_capacities: [
+        { trade: 'Tiefbau', headcount: 38, currentUtilisationPct: 60 },
+        { trade: 'Wasserbau', headcount: 24, currentUtilisationPct: 70 },
+      ],
+      updated_at: '2026-08-21T06:00:00.000Z',
+    } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: { requirements: [] } }],
+    context,
+  );
+  const chunk = result[0][0].json as {
+    classification_basis: Record<string, unknown>;
+    request_body: { messages: Array<{ role: string; content: string }> };
+  };
+  const systemPrompt = chunk.request_body.messages.find(message => message.role === 'system')?.content ?? '';
+  const userPrompt = chunk.request_body.messages.find(message => message.role === 'user')?.content ?? '';
+
+  assert.deepEqual(chunk.classification_basis, {
+    mode: 'company_profile',
+    company_name: 'Beispiel Tiefbau GmbH',
+    trades: ['Tiefbau', 'Wasserbau'],
+    profile_updated_at: '2026-08-21T06:00:00.000Z',
+  });
+  assert.match(userPrompt, /Beispiel Tiefbau GmbH/);
+  assert.match(userPrompt, /"trades":\["Tiefbau","Wasserbau"\]/);
+  assert.match(userPrompt, /"capacity_trades":\["Tiefbau","Wasserbau"\]/);
+  assert.match(systemPrompt, /Unternehmensprofil/);
+  assert.doesNotMatch(systemPrompt, /"reason"/);
+});
+
 test('stage 2 opts chunk classification into bounded per-item transport', () => {
   const node = workflowNode('tender-stage2-requirements.json', 'classify-workload');
   assert.equal(node.config.process_each_item, true);
@@ -747,7 +786,6 @@ test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload cla
     [validWorkload[0], { ...validWorkload[0] }],
     [validWorkload[0], { ...validWorkload[1], id: 'unknown-position' }],
     [validWorkload[0], { ...validWorkload[1], type: 'subcontracted' }],
-    [validWorkload[0], { ...validWorkload[1], reason: 'x'.repeat(501) }],
     { positions: validWorkload, items: validWorkload },
   ];
 
@@ -778,9 +816,10 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
   assert.deepEqual(output.value_breakdown, {
     summary: { eigen: 1, fremd: 0, liefer: 0, gemischt: 1, total: 2 },
     positions: [
-      { ...workloadPositions[0], type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
-      { ...workloadPositions[1], type: 'gemischt', reason: 'Lieferung und Einbau' },
+      { ...workloadPositions[0], type: 'eigen' },
+      { ...workloadPositions[1], type: 'gemischt' },
     ],
+    classification_basis: { mode: 'generic_fallback' },
     semantic_groups: [],
     grouping_status: 'needs_review',
     grouped_total: 0,
@@ -791,6 +830,38 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
     classified_at: (output.value_breakdown as { classified_at: string }).classified_at,
   });
   assert.match((output.value_breakdown as { classified_at: string }).classified_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('stage 2 persists only a bounded company-profile classification basis', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const response = {
+    ...llmResponse({ positions: validWorkload }),
+    classification_basis: {
+      mode: 'company_profile',
+      company_name: 'Beispiel Tiefbau GmbH',
+      trades: ['Tiefbau', 'Wasserbau'],
+      profile_updated_at: '2026-08-21T06:00:00.000Z',
+      ignored: 'not persisted',
+    },
+  };
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: response }],
+    context,
+  );
+  const breakdown = result[0][0].json.value_breakdown as {
+    classification_basis: Record<string, unknown>;
+  };
+
+  assert.deepEqual(breakdown.classification_basis, {
+    mode: 'company_profile',
+    company_name: 'Beispiel Tiefbau GmbH',
+    trades: ['Tiefbau', 'Wasserbau'],
+    profile_updated_at: '2026-08-21T06:00:00.000Z',
+  });
 });
 
 test('stage 2 preserves LLM semantic groups while deriving source coverage and quantities', async () => {
@@ -895,7 +966,7 @@ test('stage 2 discards untrusted semantic groups without losing valid classifica
   assert.equal(breakdown.summary.total, 2);
 });
 
-test('stage 2 workload parsing ignores safe extras and prompt-only reason length differences', async () => {
+test('stage 2 workload parsing drops item-level reasons and other safe extras', async () => {
   const context: ExecutionContext = new Map([
     ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
   ]);
@@ -914,10 +985,10 @@ test('stage 2 workload parsing ignores safe extras and prompt-only reason length
     context,
   );
   const positions = (result[0][0].json.value_breakdown as {
-    positions: Array<{ reason: string; confidence?: number }>;
+    positions: Array<{ reason?: string; confidence?: number }>;
   }).positions;
 
-  assert.equal(positions[1].reason, longReason);
+  assert.equal('reason' in positions[1], false);
   assert.equal('confidence' in positions[0], false);
 });
 
@@ -1062,8 +1133,8 @@ test('stage 2 classifies duplicate file-local position IDs independently and sav
 
   assert.deepEqual(breakdown.summary, { eigen: 1, fremd: 1, liefer: 0, gemischt: 0, total: 2 });
   assert.deepEqual(breakdown.positions, [
-    { ...positions[0], type: 'eigen', reason: 'Baustelleneinrichtung' },
-    { ...positions[1], type: 'fremd', reason: 'Spezialisierte Fremdleistung' },
+    { ...positions[0], type: 'eigen' },
+    { ...positions[1], type: 'fremd' },
   ]);
 });
 
