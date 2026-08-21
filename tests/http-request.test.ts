@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
@@ -8,6 +9,18 @@ const config = {
   url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
   body: '{{ JSON.stringify($json) }}',
   timeout_ms: 25,
+};
+
+const stage2PerformanceFixture = JSON.parse(readFileSync(
+  new URL('./fixtures/stage2-performance.json', import.meta.url),
+  'utf8',
+)) as {
+  position_count: number;
+  chunk_size: number;
+  expected_provider_calls: number;
+  simulated_chunk_latency_ms: number;
+  maximum_optimized_to_sequential_ratio: number;
+  optimized_max_concurrency: number;
 };
 
 async function withFetch(
@@ -77,6 +90,111 @@ test('HTTP requests process a bounded item batch sequentially with per-item temp
     ]);
     assert.equal(maxActiveRequests, 1);
   });
+});
+
+test('HTTP requests preserve item order with opt-in bounded concurrency', async () => {
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+
+  await withFetch(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { chunk: number };
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    await new Promise(resolve => setTimeout(resolve, body.chunk === 1 ? 20 : 5));
+    activeRequests -= 1;
+    return Response.json({ echoed: body });
+  }, async () => {
+    const output = await httpRequestExecutor.execute(
+      {
+        ...config,
+        process_each_item: true,
+        max_concurrency: 2,
+        timeout_ms: 1_000,
+      },
+      [
+        { json: { chunk: 1 } },
+        { json: { chunk: 2 } },
+        { json: { chunk: 3 } },
+      ],
+      new Map(),
+    );
+
+    assert.equal(maxActiveRequests, 2);
+    assert.deepEqual(output[0].map(item => item.json), [
+      { echoed: { chunk: 1 } },
+      { echoed: { chunk: 2 } },
+      { echoed: { chunk: 3 } },
+    ]);
+  });
+});
+
+test('Stage 2 two-chunk fixture materially reduces scheduler wall time without changing calls or output', async (t) => {
+  const chunkCount = Math.ceil(
+    stage2PerformanceFixture.position_count / stage2PerformanceFixture.chunk_size,
+  );
+  const input = Array.from({ length: chunkCount }, (_, chunkIndex) => ({
+    json: { chunk: chunkIndex + 1 },
+  }));
+
+  async function run(maxConcurrency?: number) {
+    let calls = 0;
+    const startedAt = performance.now();
+    let output: Awaited<ReturnType<typeof httpRequestExecutor.execute>>;
+    await withFetch(async (_url, init) => {
+      calls += 1;
+      await new Promise(resolve => setTimeout(
+        resolve,
+        stage2PerformanceFixture.simulated_chunk_latency_ms,
+      ));
+      return Response.json({ echoed: JSON.parse(String(init?.body)) });
+    }, async () => {
+      output = await httpRequestExecutor.execute(
+        {
+          ...config,
+          process_each_item: true,
+          ...(maxConcurrency ? { max_concurrency: maxConcurrency } : {}),
+          timeout_ms: 1_000,
+        },
+        input,
+        new Map(),
+      );
+    });
+    return { calls, durationMs: performance.now() - startedAt, output: output! };
+  }
+
+  const sequential = await run();
+  const optimized = await run(stage2PerformanceFixture.optimized_max_concurrency);
+  assert.equal(chunkCount, stage2PerformanceFixture.expected_provider_calls);
+  assert.equal(sequential.calls, stage2PerformanceFixture.expected_provider_calls);
+  assert.equal(optimized.calls, stage2PerformanceFixture.expected_provider_calls);
+  assert.deepEqual(optimized.output, sequential.output);
+  assert.ok(
+    optimized.durationMs / sequential.durationMs
+      <= stage2PerformanceFixture.maximum_optimized_to_sequential_ratio,
+  );
+  t.diagnostic(
+    `fixture scheduler: ${sequential.durationMs.toFixed(1)}ms sequential -> ${optimized.durationMs.toFixed(1)}ms concurrent`,
+  );
+});
+
+test('HTTP requests reject invalid item concurrency before contacting the provider', async () => {
+  let calls = 0;
+
+  await withFetch(async () => {
+    calls += 1;
+    return Response.json({ ok: true });
+  }, async () => {
+    await assert.rejects(
+      () => httpRequestExecutor.execute(
+        { ...config, process_each_item: true, max_concurrency: 11 },
+        [{ json: { chunk: 1 } }],
+        new Map(),
+      ),
+      /HTTP item concurrency invalid/,
+    );
+  });
+
+  assert.equal(calls, 0);
 });
 
 test('HTTP requests reject oversized item batches before contacting the provider', async () => {

@@ -1,0 +1,15 @@
+{
+  "id": "test01-shaped-stage2-two-chunk",
+  "source": "Non-customer Test01 production timing recorded 2026-08-20",
+  "position_count": 209,
+  "chunk_size": 120,
+  "production_before_ms": {
+    "stage_2": 63753,
+    "classify_workload": 33704,
+    "reconcile_workload_groups_llm": 10473
+  },
+  "simulated_chunk_latency_ms": 60,
+  "maximum_optimized_to_sequential_ratio": 0.7,
+  "expected_provider_calls": 2,
+  "optimized_max_concurrency": 2
+}
