@@ -89,6 +89,66 @@ test('Stage 2/3 receiver claims before work and releases after every mutation', 
   }
 });
 
+test('evidence re-evaluation uses the receiver one-winner claim before workflow work', async () => {
+  const events: string[] = [];
+  const telemetryMutation = {
+    eq() { return telemetryMutation; },
+    async select() { events.push('telemetry:select'); return { data: [{}], error: null }; },
+  };
+  const transition = {
+    eq() { return transition; },
+    async select() {
+      events.push('reevaluation:claimed');
+      return { data: [{ id: tenderId, processing_status: 'evaluating' }], error: null };
+    },
+  };
+  const client = {
+    async rpc(name: string) {
+      events.push(`rpc:${name}`);
+      if (name === 'claim_pipeline_admission') return { data: true, error: null };
+      if (name === 'claim_tender_processing_stage') throw new Error('wrong Stage 3 claim');
+      return { data: true, error: null };
+    },
+    from(table: string) {
+      events.push(`table:${table}`);
+      return {
+        insert() { return telemetryMutation; },
+        update() { return table === 'tenders' ? transition : telemetryMutation; },
+      };
+    },
+  };
+  const runner = new WorkflowRunner(client as never, (id) => {
+    events.push('workflow:load');
+    return workflow(id);
+  });
+  const requirementEvidence = [{
+    requirement_id: 'REQ-001',
+    status: 'verified',
+    note: null,
+    cert_reference: null,
+    cert_expiry: null,
+    updated_at: '2026-08-05T20:00:00.000Z',
+  }];
+
+  const result = await runner.run('tender-stage3-evaluation', envelope({
+    evaluation_reason: 'evidence_changes',
+    requirement_evidence: requirementEvidence,
+  }));
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.response_payload, [{ json: {
+    tender_id: tenderId,
+    org_id: orgId,
+    requirement_evidence: requirementEvidence,
+  } }]);
+  assert.equal(events[0], 'rpc:claim_pipeline_admission');
+  assert.equal(events[1], 'table:tenders');
+  assert.equal(events[2], 'reevaluation:claimed');
+  assert.ok(events.indexOf('reevaluation:claimed') < events.indexOf('workflow:load'));
+  assert.equal(events.includes('rpc:claim_tender_processing_stage'), false);
+  assert.equal(events.at(-1), 'rpc:release_pipeline_admission');
+});
+
 test('Stage 1 claims before work but leaves the cross-service lease for Tenderly to finish', async () => {
   for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
     const db = database();
