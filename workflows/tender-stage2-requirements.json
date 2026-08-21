@@ -122,6 +122,7 @@
         "auth_type": "bearer",
         "auth_value": "{{ process.env.GEMINI_API_KEY }}",
         "process_each_item": true,
+        "max_concurrency": 2,
         "body_input_field": "request_body",
         "timeout_ms": 60000,
         "headers": {

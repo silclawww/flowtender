@@ -16,6 +16,7 @@ interface WorkflowCodeNode {
     code?: string;
     condition?: string;
     continue_on_error?: boolean;
+    max_concurrency?: number;
     process_each_item?: boolean;
     select?: string;
   };
@@ -608,6 +609,7 @@ test('stage 2 uses bounded company-profile context without requesting item-level
 test('stage 2 opts chunk classification into bounded per-item transport', () => {
   const node = workflowNode('tender-stage2-requirements.json', 'classify-workload');
   assert.equal(node.config.process_each_item, true);
+  assert.equal(node.config.max_concurrency, 2);
   assert.equal(node.config.body_input_field, 'request_body');
 });
 

@@ -190,9 +190,25 @@ export const httpRequestExecutor: NodeExecutor = {
         throw new NonRetryableError('HTTP item batch too large');
       }
 
+      const configuredConcurrency = config.max_concurrency;
+      const maxConcurrency = configuredConcurrency === undefined ? 1 : configuredConcurrency;
+      if (typeof maxConcurrency !== 'number'
+        || !Number.isInteger(maxConcurrency)
+        || maxConcurrency < 1
+        || maxConcurrency > MAX_ITEM_BATCH) {
+        throw new NonRetryableError('HTTP item concurrency invalid');
+      }
+
       const output: ExecutionItem[] = [];
-      for (const item of input) {
-        output.push(await executeRequest(config, [item], context, runtime));
+      for (let index = 0; index < input.length; index += maxConcurrency) {
+        const batch = await Promise.allSettled(
+          input.slice(index, index + maxConcurrency)
+            .map(item => executeRequest(config, [item], context, runtime)),
+        );
+        for (const result of batch) {
+          if (result.status === 'rejected') throw result.reason;
+          output.push(result.value);
+        }
       }
       return [output];
     } catch (error) {
