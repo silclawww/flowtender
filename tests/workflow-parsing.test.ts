@@ -421,7 +421,7 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
 });
 
 test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', async () => {
-  const checkboxState = '[[SOURCE 216.pdf PAGE 3]] [X] TRBS 2121 qualification';
+  const checkboxState = '[[SOURCE 216.pdf PAGE 3]] [ROW 001] [X] TRBS 2121 "qualification"';
   const description = 'D'.repeat(60_000);
   const groundReport = 'G'.repeat(80_000);
   const { prepared } = await parseStage2Requirements({
@@ -434,18 +434,41 @@ test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', a
     },
   }, 2);
 
-  assert.match(prepared.extraction_text as string, /^=== 216_checkbox_state ===/);
+  assert.doesNotMatch(prepared.extraction_text as string, /216_checkbox_state|Form 216 boilerplate/);
+  assert.match(prepared.selected_checkbox_state as string, /\[ROW 001\] \[X\] TRBS 2121 ”qualification”/);
+  assert.doesNotMatch(prepared.selected_checkbox_state as string, /"qualification"/);
   assert.match(prepared.extraction_text as string, /=== description ===\nD{100}/);
   assert.match(prepared.extraction_text as string, /=== ground_report ===\nG{100}/);
   assert.equal((prepared.requirements_coverage as Record<string, unknown>).source_truncated, false);
   assert.ok((prepared.extraction_text as string).length > 140_000);
 });
 
-test('stage 2 extraction contract treats Form 216 state and source pages as authoritative', () => {
+test('stage 2 deterministically retains every selected Form 216 row', async () => {
+  const checkboxState = [
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] Referenznachweise',
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 002] [ ] Nicht ausgewählte Eigenerklärung',
+    '[[SOURCE 216.pdf PAGE 2]] [ROW 003] [X] MVAS-Qualifikation',
+  ].join('\n');
+  const { parsed } = await parseStage2Requirements({
+    pdf_texts_extracted: { '216_checkbox_state': checkboxState },
+  }, 1);
+  const requirements = parsed.requirements as Array<Record<string, unknown>>;
+  const retainedSource = requirements.flatMap((requirement) => requirement.source_fragments as string[]).join('\n');
+
+  assert.equal(requirements.length, 3);
+  assert.match(retainedSource, /\[ROW 001\].*\[X\]/);
+  assert.match(retainedSource, /\[ROW 003\].*\[X\]/);
+  assert.doesNotMatch(retainedSource, /\[ROW 002\]/);
+  assert.equal((parsed.requirements_coverage as Record<string, unknown>).requirement_count, 3);
+});
+
+test('stage 2 extraction contract separates deterministic Form 216 state from technical source', () => {
   const body = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm').config.body ?? '';
 
-  assert.match(body, /Only \[X\].*selected requirements/i);
-  assert.match(body, /\[ \].*explicitly not selected/i);
+  assert.match(body, /FORM 216.*außerhalb des Modells deterministisch verarbeitet/i);
+  assert.match(body, /maximal 16 Anforderungen/i);
+  assert.match(body, /einzigen Feld requirements/i);
+  assert.match(body, /jedes Start-\/Fertigstellungsdatum.*Sperrzeit\/Winterpause/i);
   assert.match(body, /SOURCE.*PAGE.*source_fragments/i);
   assert.match(body, /Baubeschreibung.*Baugrund/i);
 });
