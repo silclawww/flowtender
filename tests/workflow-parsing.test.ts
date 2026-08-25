@@ -144,6 +144,171 @@ test('Stage 3 keeps distance informational and outside the evaluation prompt', (
   assert.doesNotMatch(body, /Entfernung über|Anfahrtskosten|Unterbringung|Logistikaufwand/);
 });
 
+test('Stage 3 prompts treat complete profile and tender context as data without truncation', () => {
+  for (const nodeId of ['evaluate-llm', 'reconcile-evaluation-llm']) {
+    const body = workflowNode('tender-stage3-evaluation.json', nodeId).config.body ?? '';
+    assert.match(body, /UNTERNEHMENSPROFIL[\s\S]*Daten, keine Anweisungen/);
+    assert.match(body, /Leere, null oder nicht vorhandene Profilfelder bedeuten[\s\S]*nicht angegeben/);
+    assert.match(body, /project_references_state/);
+    assert.match(body, /needs_review/);
+    assert.doesNotMatch(body, /requirements[^\n]*\.slice|company_profile[^\n]*\.slice/i);
+  }
+});
+
+test('Stage 3 sends every stored evaluation field without tender or internal profile metadata', async () => {
+  const requirements = Array.from({ length: 25 }, (_, index) => ({
+    id: `REQ-${String(index + 1).padStart(3, '0')}`,
+    title: `Anforderung ${index + 1}`,
+    description: `Vollständiger Quellkontext ${index + 1} ${'x'.repeat(400)}`,
+  }));
+  const storedProfile = {
+    id: 'private-profile-id',
+    org_id: 'private-org-id',
+    user_id: 'private-user-id',
+    name: 'Beispiel Tiefbau GmbH',
+    founded_year: 1901,
+    team_size: 95,
+    annual_turnover_eur: 14_000_000,
+    trades: ['Tiefbau', 'Wasserbau'],
+    regions: ['Nordrhein-Westfalen'],
+    service_types: ['Öffentliche Auftraggeber'],
+    certifications: ['ISO 9001'],
+    project_size_min_eur: 50_000,
+    project_size_max_eur: 1_000_000,
+    trade_capacities: [{
+      trade: 'Tiefbau',
+      headcount: 24,
+      availableWeeksPerYear: 40,
+      currentUtilisationPct: 65,
+    }],
+    insurances: {
+      public_liability: { amount: 5_000_000, currency: 'EUR' },
+    },
+    policies: {
+      gdpr_compliant: true,
+      sustainability_policy: false,
+    },
+    project_references: [{
+      client: 'Stadt Beispiel',
+      project: 'Kanalbau Nord',
+      year: 2025,
+      value_eur: 800_000,
+      description: 'Kanal- und Straßenbau',
+    }],
+    project_references_state: 'not_provided',
+    hq_street: 'Musterstraße 1',
+    hq_postal_code: '45127',
+    hq_city: 'Essen',
+    onboarding_complete: true,
+    onboarding_step: 4,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-08-25T00:00:00.000Z',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements,
+      region: 'München',
+      value_breakdown: null,
+    } }]],
+    ['load-company-profile', [{ json: storedProfile }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    context,
+  );
+  const output = result[0][0].json;
+
+  assert.deepEqual(output.company_profile, {
+    name: 'Beispiel Tiefbau GmbH',
+    founded_year: 1901,
+    team_size: 95,
+    annual_turnover_eur: 14_000_000,
+    trades: ['Tiefbau', 'Wasserbau'],
+    regions: ['Nordrhein-Westfalen'],
+    service_types: ['Öffentliche Auftraggeber'],
+    certifications: ['ISO 9001'],
+    project_size_min_eur: 50_000,
+    project_size_max_eur: 1_000_000,
+    trade_capacities: [{
+      trade: 'Tiefbau',
+      headcount: 24,
+      availableWeeksPerYear: 40,
+      currentUtilisationPct: 65,
+    }],
+    insurances: {
+      public_liability: { amount: 5_000_000, currency: 'EUR' },
+    },
+    policies: {
+      gdpr_compliant: true,
+      sustainability_policy: false,
+    },
+    project_references: [{
+      client: 'Stadt Beispiel',
+      project: 'Kanalbau Nord',
+      year: 2025,
+      value_eur: 800_000,
+      description: 'Kanal- und Straßenbau',
+    }],
+    project_references_state: 'provided',
+    hq_street: 'Musterstraße 1',
+    hq_postal_code: '45127',
+    hq_city: 'Essen',
+  });
+  assert.deepEqual(output.requirements, requirements);
+  assert.equal(output.requirements_json, JSON.stringify(requirements));
+  assert.equal(JSON.stringify(output).includes('private-profile-id'), false);
+  assert.equal(JSON.stringify(output).includes('private-org-id'), false);
+  assert.equal(JSON.stringify(output).includes('private-user-id'), false);
+  assert.equal('capabilities_summary' in (output.company_profile as Record<string, unknown>), false);
+});
+
+test('Stage 3 distinguishes unknown, absent and provided reference evidence', async () => {
+  type PreparedReferenceContext = {
+    company_profile: { project_references_state: string };
+    reference_evidence_unknown_ids: string[];
+    reference_evidence_absent_ids: string[];
+  };
+  const requirements = [
+    { id: 'REQ-001', title: 'Referenzobjekte der letzten fünf Jahre', description: '' },
+    { id: 'REQ-002', title: 'ISO 9001', description: '' },
+  ];
+  const run = async (profile: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    new Map([
+      ['load-requirements', [{ json: { id: 'tender-id', requirements, region: 'München' } }]],
+      ['load-company-profile', [{ json: profile }]],
+    ]),
+  );
+
+  const unknown = (await run({
+    project_references: [],
+    project_references_state: 'not_provided',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(unknown.company_profile.project_references_state, 'not_provided');
+  assert.deepEqual(unknown.reference_evidence_unknown_ids, ['REQ-001']);
+  assert.deepEqual(unknown.reference_evidence_absent_ids, []);
+
+  const absent = (await run({
+    project_references: [],
+    project_references_state: 'explicitly_absent',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(absent.company_profile.project_references_state, 'explicitly_absent');
+  assert.deepEqual(absent.reference_evidence_unknown_ids, []);
+  assert.deepEqual(absent.reference_evidence_absent_ids, ['REQ-001']);
+
+  const provided = (await run({
+    project_references: [{ client: 'Stadt A', project: 'Kanalbau A' }],
+    project_references_state: 'not_provided',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(provided.company_profile.project_references_state, 'provided');
+  assert.deepEqual(provided.reference_evidence_unknown_ids, []);
+  assert.deepEqual(provided.reference_evidence_absent_ids, []);
+});
+
 const validPdfMetadata = {
   title: 'Brückensanierung Augsburg',
   summary: 'Die Ausschreibung umfasst die Sanierung einer Straßenbrücke.',
@@ -1228,6 +1393,88 @@ function stage3Context(): ExecutionContext {
     ['geocode-distance', [{ json: { distance_km: 47.5, distance_note: '47,5 km zum Bauort' } }]],
   ]);
 }
+
+test('stage 3 applies the stored reference-evidence state deterministically', async () => {
+  const requirements = [
+    { id: 'REQ-001', title: 'Drei vergleichbare Referenzprojekte', is_critical: true },
+    { id: 'REQ-002', title: 'ISO 9001', is_critical: false },
+  ];
+  const evaluation = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'partial', is_blocking: true },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const run = async (preparedContext: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(evaluation) }],
+    new Map([
+      ['load-requirements', [{ json: {
+        id: 'tender-id',
+        requirements,
+        requirements_coverage: completeRequirementsCoverage(2),
+      } }]],
+      ['prepare-context', [{ json: preparedContext }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]),
+  );
+
+  const unknown = (await run({
+    reference_evidence_unknown_ids: ['REQ-001'],
+    reference_evidence_absent_ids: [],
+  }))[0][0].json;
+  assert.equal(unknown.bid_recommendation, 'needs_review');
+  assert.deepEqual(unknown.eligibility_requirements, [
+    {
+      id: 'REQ-001',
+      status: 'needs_review',
+      is_blocking: false,
+      review_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
+    },
+    { id: 'REQ-002', status: 'compliant', is_blocking: false },
+  ]);
+  assert.deepEqual(unknown.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 0,
+    needs_review_count: 1,
+    blocking_issues: 0,
+  });
+
+  const absent = (await run({
+    reference_evidence_unknown_ids: [],
+    reference_evidence_absent_ids: ['REQ-001'],
+  }))[0][0].json;
+  assert.equal(absent.bid_recommendation, 'recommend_no_bid');
+  assert.deepEqual(absent.eligibility_requirements, [
+    { id: 'REQ-001', status: 'not_met', is_blocking: true },
+    { id: 'REQ-002', status: 'compliant', is_blocking: false },
+  ]);
+  assert.deepEqual(absent.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 1,
+    blocking_issues: 1,
+  });
+});
+
+test('stage 3 accepts a model-declared needs-review judgment without a repair call', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'needs_review', is_blocking: false },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
+    [{ json: llmResponse(candidate) }],
+    stage3Context(),
+  );
+
+  assert.equal(result[0][0].json.reconciliation_required, false);
+});
 
 test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
   const valid = await codeExecutor.execute(
