@@ -58,3 +58,27 @@ roughly 32,000 selected source characters existed, while 12,000 were used for
 requirement extraction. Stage 3 remains conservative (`needs_review`) for that
 state. Shadow comparisons must distinguish profile effects from this upstream
 coverage limitation.
+
+## Read-only shadow evaluations
+
+`npm run shadow:stage3 --` runs one Stage 3 comparison with a chosen source
+tender and company profile. It reads those two rows, then executes the exact
+production preparation, prompt, validation, optional one-call repair, parser,
+and finalisation nodes in memory. It never executes the workflow trigger,
+admission, telemetry, stage-claim, or `save-evaluation` node.
+
+```sh
+npm run shadow:stage3 -- \
+  --tender TENDER_UUID \
+  --source-org SOURCE_ORG_UUID \
+  --profile-org PROFILE_ORG_UUID \
+  --profile-label comparison_label \
+  --output-dir /absolute/private/path
+```
+
+The output directory must be absolute and outside the repository. Artifacts
+are created without overwrite permission (`wx`) at mode `0600`; the directory
+must grant no group or public access (`0700` or stricter). Each artifact records
+the workflow and input hashes, exact executed node list, model-call count,
+prepared model input, and final shadow output. The database access in the
+operator CLI is select-only.

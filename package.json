@@ -10,6 +10,7 @@
     "test:integration": "bash scripts/test-integration.sh",
     "test:migration-db": "bash scripts/test-migration-db.sh",
     "probe:deployed-limits": "node scripts/probe-deployed-limits.mjs",
+    "shadow:stage3": "ts-node --esm scripts/shadow-stage3.ts",
     "cli": "npx ts-node scripts/cli.ts"
   },
   "dependencies": {

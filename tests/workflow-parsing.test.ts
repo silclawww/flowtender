@@ -1459,7 +1459,7 @@ test('stage 3 applies the stored reference-evidence state deterministically', as
   });
 });
 
-test('stage 3 accepts a model-declared needs-review judgment without a repair call', async () => {
+test('stage 3 accepts a model-declared needs-review judgment before and after repair', async () => {
   const candidate = {
     ...validEvaluation,
     eligibility_requirements: [
@@ -1467,13 +1467,15 @@ test('stage 3 accepts a model-declared needs-review judgment without a repair ca
       { id: 'REQ-002', status: 'compliant', is_blocking: false },
     ],
   };
-  const result = await codeExecutor.execute(
-    { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
-    [{ json: llmResponse(candidate) }],
-    stage3Context(),
-  );
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      stage3Context(),
+    );
 
-  assert.equal(result[0][0].json.reconciliation_required, false);
+    assert.equal(result[0][0].json.reconciliation_required, false);
+  }
 });
 
 test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
