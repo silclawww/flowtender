@@ -59,8 +59,20 @@ test('Stage 3 shadow executes the production evaluation path without any persist
           rationale: 'Die nachgewiesene Fachkompetenz passt, Referenznachweise sind noch zu prüfen.',
           strengths: ['Passendes Gewerk'],
           eligibility_requirements: [
-            { id: 'REQ-001', status: 'compliant', is_blocking: false },
-            { id: 'REQ-002', status: 'needs_review', is_blocking: false },
+            {
+              id: 'REQ-001',
+              status: 'compliant',
+              is_blocking: false,
+              profile_evidence: ['certifications'],
+              assessment_reason: 'Die Zertifizierung ist im Profil hinterlegt.',
+            },
+            {
+              id: 'REQ-002',
+              status: 'needs_review',
+              is_blocking: false,
+              profile_evidence: [],
+              assessment_reason: 'Referenznachweise sind noch nicht hinterlegt.',
+            },
           ],
           risks: [{
             id: 'RISK-001',
@@ -113,6 +125,8 @@ test('Stage 3 shadow executes the production evaluation path without any persist
     id: 'REQ-002',
     status: 'needs_review',
     is_blocking: false,
+    profile_evidence: ['project_references_state'],
+    assessment_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
     review_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
   });
 });
@@ -133,8 +147,20 @@ test('Stage 3 shadow reuses the bounded repair path without falling through to p
     rationale: 'Die Fachkompetenz passt; der Referenznachweis bleibt offen.',
     strengths: ['Passendes Gewerk'],
     eligibility_requirements: [
-      { id: 'REQ-001', status: 'compliant', is_blocking: false },
-      { id: 'REQ-002', status: 'needs_review', is_blocking: false },
+      {
+        id: 'REQ-001',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['certifications'],
+        assessment_reason: 'Die Zertifizierung ist im Profil hinterlegt.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'needs_review',
+        is_blocking: false,
+        profile_evidence: [],
+        assessment_reason: 'Referenznachweise sind noch nicht hinterlegt.',
+      },
     ],
     risks: [],
     clarifications: [],

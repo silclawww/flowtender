@@ -44,6 +44,13 @@ reference evidence is also normalised after the model call to non-blocking
 `needs_review`; explicitly absent references become `not_met` and block only a
 critical source requirement.
 
+Every non-review eligibility judgment must cite one to eight non-empty fields
+from the prepared profile and include a bounded assessment reason. The first
+pass, repair inspector, fallback, and final parser all enforce the same
+contract. An unavailable or invented field triggers the single bounded repair;
+if no defensible judgment survives, the fallback is `needs_review`. This makes
+profile-based fit claims inspectable without exposing internal profile IDs.
+
 ## Context and source coverage
 
 Stage 3 serialises every persisted requirement unchanged; neither requirements

@@ -151,6 +151,7 @@ test('Stage 3 prompts treat complete profile and tender context as data without 
     assert.match(body, /Leere, null oder nicht vorhandene Profilfelder bedeuten[\s\S]*nicht angegeben/);
     assert.match(body, /project_references_state/);
     assert.match(body, /needs_review/);
+    assert.match(body, /profile_evidence/);
     assert.doesNotMatch(body, /requirements[^\n]*\.slice|company_profile[^\n]*\.slice/i);
   }
 });
@@ -263,6 +264,10 @@ test('Stage 3 sends every stored evaluation field without tender or internal pro
   assert.equal(JSON.stringify(output).includes('private-org-id'), false);
   assert.equal(JSON.stringify(output).includes('private-user-id'), false);
   assert.equal('capabilities_summary' in (output.company_profile as Record<string, unknown>), false);
+  assert.deepEqual(output.profile_evidence_contract, {
+    version: 1,
+    available_fields: Object.keys(output.company_profile as Record<string, unknown>),
+  });
 });
 
 test('Stage 3 distinguishes unknown, absent and provided reference evidence', async () => {
@@ -1476,6 +1481,57 @@ test('stage 3 accepts a model-declared needs-review judgment before and after re
 
     assert.equal(result[0][0].json.reconciliation_required, false);
   }
+});
+
+test('stage 3 rejects eligibility evidence that is absent from the prepared profile', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['commercial_register_number'],
+        assessment_reason: 'Ein Registereintrag sei angeblich belegt.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'needs_review',
+        is_blocking: false,
+        profile_evidence: [],
+        assessment_reason: 'Kein belastbarer Profilnachweis hinterlegt.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['certifications'],
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      ['eligibility_requirements[0].profile_evidence'],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
 });
 
 test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
