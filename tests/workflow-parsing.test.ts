@@ -152,6 +152,7 @@ test('Stage 3 prompts treat complete profile and tender context as data without 
     assert.match(body, /project_references_state/);
     assert.match(body, /needs_review/);
     assert.match(body, /profile_evidence/);
+    assert.match(body, /DIREKTBELEGE JE ANFORDERUNG/);
     assert.doesNotMatch(body, /requirements[^\n]*\.slice|company_profile[^\n]*\.slice/i);
   }
 });
@@ -267,6 +268,65 @@ test('Stage 3 sends every stored evaluation field without tender or internal pro
   assert.deepEqual(output.profile_evidence_contract, {
     version: 1,
     available_fields: Object.keys(output.company_profile as Record<string, unknown>),
+  });
+});
+
+test('Stage 3 limits direct evidence to requirement-matching profile values', async () => {
+  const requirements = [
+    { id: 'REQ-CERT', category: 'Zertifizierung', title: 'ISO 9001' },
+    { id: 'REQ-OTHER-CERT', category: 'Zertifizierung', title: 'ZTV Asphalt' },
+    { id: 'REQ-EQUIP', category: 'Ausrüstung', title: 'Asphaltbeschicker' },
+    { id: 'REQ-FORM', category: 'Sonstiges', title: 'Angebotsschreiben' },
+    { id: 'REQ-WORKFORCE', category: 'Personal', title: 'Arbeitskräfte der letzten 3 Jahre' },
+    { id: 'REQ-TURNOVER', category: 'Finanziell', title: 'Jahresumsatz mindestens 1 Mio. EUR' },
+    { id: 'REQ-TARIFF', category: 'Tariflich', title: 'Einhaltung des Mindestlohns' },
+  ];
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    new Map([
+      ['load-requirements', [{ json: { id: 'tender-id', requirements } }]],
+      ['load-company-profile', [{ json: {
+        team_size: 20,
+        annual_turnover_eur: 2_000_000,
+        certifications: ['ISO 9001'],
+        trade_capacities: [{ trade: 'Straßenbau', headcount: 20 }],
+        policies: { pays_living_wage: true },
+        trades: ['Straßenbau'],
+        service_types: ['Generalunternehmer'],
+      } }]],
+    ]),
+  );
+
+  assert.deepEqual(result[0][0].json.requirement_evidence_fields, {
+    'REQ-CERT': ['certifications'],
+    'REQ-OTHER-CERT': [],
+    'REQ-EQUIP': [],
+    'REQ-FORM': [],
+    'REQ-WORKFORCE': ['team_size', 'trade_capacities'],
+    'REQ-TURNOVER': ['annual_turnover_eur'],
+    'REQ-TARIFF': ['policies'],
+  });
+  assert.deepEqual(result[0][0].json.requirement_evidence_policy, {
+    'REQ-CERT': {
+      allowed_fields: ['certifications'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
+    'REQ-OTHER-CERT': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-EQUIP': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-FORM': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-WORKFORCE': {
+      allowed_fields: ['team_size', 'trade_capacities'],
+      allowed_statuses: ['needs_review'],
+    },
+    'REQ-TURNOVER': {
+      allowed_fields: ['annual_turnover_eur'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
+    'REQ-TARIFF': {
+      allowed_fields: ['policies'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
   });
 });
 
@@ -1521,6 +1581,129 @@ test('stage 3 rejects eligibility evidence that is absent from the prepared prof
     assert.deepEqual(
       (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
       ['eligibility_requirements[0].profile_evidence'],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
+test('stage 3 rejects available profile fields that cannot directly prove the requirement', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['trades'],
+        assessment_reason: 'Das Gewerk allein belege angeblich das Zertifikat.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'needs_review',
+        is_blocking: false,
+        profile_evidence: [],
+        assessment_reason: 'Kein direkter Profilnachweis hinterlegt.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['trades', 'certifications'],
+    },
+    requirement_evidence_fields: {
+      'REQ-001': ['certifications'],
+      'REQ-002': [],
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      ['eligibility_requirements[0].profile_evidence'],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
+test('stage 3 rejects unsupported negative or complete judgments even with a related field', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'not_met',
+        is_blocking: true,
+        profile_evidence: ['certifications'],
+        assessment_reason: 'Ein nicht genannter Nachweis wurde fälschlich als fehlend gewertet.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['team_size'],
+        assessment_reason: 'Die aktuelle Teamgröße belege angeblich die dreijährige Aufstellung vollständig.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['certifications', 'team_size'],
+    },
+    requirement_evidence_fields: {
+      'REQ-001': ['certifications'],
+      'REQ-002': ['team_size'],
+    },
+    requirement_evidence_policy: {
+      'REQ-001': {
+        allowed_fields: ['certifications'],
+        allowed_statuses: ['compliant', 'partial', 'needs_review'],
+      },
+      'REQ-002': {
+        allowed_fields: ['team_size'],
+        allowed_statuses: ['partial', 'needs_review'],
+      },
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      [
+        'eligibility_requirements[0].status',
+        'eligibility_requirements[1].status',
+      ],
     );
   }
 

@@ -37,7 +37,7 @@ const profile = {
   trades: ['Tiefbau'],
   regions: ['Bayern'],
   service_types: ['Öffentliche Auftraggeber'],
-  certifications: ['PQ-VOB'],
+  certifications: ['ISO 9001'],
   project_size_min_eur: 50_000,
   project_size_max_eur: 5_000_000,
   trade_capacities: [],
