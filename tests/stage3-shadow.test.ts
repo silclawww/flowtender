@@ -56,6 +56,13 @@ test('Stage 3 shadow executes the production evaluation path without any persist
       return [[{ json: {
         choices: [{ message: { content: JSON.stringify({
           strategic_fit_score: 77,
+          score_components: {
+            trade_scope_fit: 22,
+            capacity_project_size_fit: 16,
+            region_delivery_model_fit: 12,
+            references_qualifications_fit: 17,
+            execution_value_creation_fit: 10,
+          },
           rationale: 'Die nachgewiesene Fachkompetenz passt, Referenznachweise sind noch zu prüfen.',
           strengths: ['Passendes Gewerk'],
           eligibility_requirements: [
@@ -120,6 +127,13 @@ test('Stage 3 shadow executes the production evaluation path without any persist
   assert.equal('org_id' in artifact.input.company_profile, false);
   assert.equal('user_id' in artifact.input.company_profile, false);
   assert.equal(artifact.output.strategic_fit_score, 77);
+  assert.deepEqual(artifact.output.score_components, {
+    trade_scope_fit: 22,
+    capacity_project_size_fit: 16,
+    region_delivery_model_fit: 12,
+    references_qualifications_fit: 17,
+    execution_value_creation_fit: 10,
+  });
   assert.equal(artifact.output.bid_recommendation, 'needs_review');
   assert.deepEqual(artifact.output.eligibility_requirements[1], {
     id: 'REQ-002',
@@ -134,6 +148,13 @@ test('Stage 3 shadow executes the production evaluation path without any persist
 test('Stage 3 shadow reuses the bounded repair path without falling through to persistence', async () => {
   const initial = {
     strategic_fit_score: 77,
+    score_components: {
+      trade_scope_fit: 22,
+      capacity_project_size_fit: 16,
+      region_delivery_model_fit: 12,
+      references_qualifications_fit: 17,
+      execution_value_creation_fit: 10,
+    },
     rationale: 'Unvollständiger Entwurf.',
     strengths: [],
     eligibility_requirements: [
@@ -144,6 +165,13 @@ test('Stage 3 shadow reuses the bounded repair path without falling through to p
   };
   const repaired = {
     strategic_fit_score: 76,
+    score_components: {
+      trade_scope_fit: 21,
+      capacity_project_size_fit: 16,
+      region_delivery_model_fit: 12,
+      references_qualifications_fit: 17,
+      execution_value_creation_fit: 10,
+    },
     rationale: 'Die Fachkompetenz passt; der Referenznachweis bleibt offen.',
     strengths: ['Passendes Gewerk'],
     eligibility_requirements: [

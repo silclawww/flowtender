@@ -153,6 +153,9 @@ export async function runStage3ShadowEvaluation(
 
   const profileItem = { json: profile };
   const prepared = await runCode('prepare-context', [profileItem]);
+  if ((prepared.json.score_methodology as { version?: unknown } | undefined)?.version !== 1) {
+    throw new Error('SHADOW_SCORE_METHODOLOGY_INVALID');
+  }
   const geocoded = await runCode('geocode-distance', [prepared]);
   const initialDraft = await runModel('evaluate-llm', [geocoded]);
   const inspectedInitial = await runCode('inspect-evaluation', [initialDraft]);

@@ -153,6 +153,15 @@ test('Stage 3 prompts treat complete profile and tender context as data without 
     assert.match(body, /needs_review/);
     assert.match(body, /profile_evidence/);
     assert.match(body, /DIREKTBELEGE JE ANFORDERUNG/);
+    assert.match(body, /FESTE ANALYSEMETHODE/);
+    assert.match(body, /Leistungs- und Gewerke-Fit \(0-25/);
+    assert.match(body, /13 \+ 10 \+ 8 \+ 12 \+ 7 = 50/);
+    assert.match(body, /score_components/);
+    assert.match(body, /needs_review allein senkt den Score nicht/);
+    assert.match(body, /BESTÄTIGTER BLOCKER/);
+    assert.match(body, /OFFENE NACHWEISPRÜFUNG/);
+    assert.match(body, /Risiken in dieser stabilen Reihenfolge/);
+    assert.match(body, /Bei needs_review immer als offen/);
     assert.doesNotMatch(body, /requirements[^\n]*\.slice|company_profile[^\n]*\.slice/i);
   }
 });
@@ -268,6 +277,23 @@ test('Stage 3 sends every stored evaluation field without tender or internal pro
   assert.deepEqual(output.profile_evidence_contract, {
     version: 1,
     available_fields: Object.keys(output.company_profile as Record<string, unknown>),
+  });
+  assert.deepEqual(output.score_methodology, {
+    version: 1,
+    component_maxima: {
+      trade_scope_fit: 25,
+      capacity_project_size_fit: 20,
+      region_delivery_model_fit: 15,
+      references_qualifications_fit: 25,
+      execution_value_creation_fit: 15,
+    },
+    neutral_components: {
+      trade_scope_fit: 13,
+      capacity_project_size_fit: 10,
+      region_delivery_model_fit: 8,
+      references_qualifications_fit: 12,
+      execution_value_creation_fit: 7,
+    },
   });
 });
 
@@ -1395,6 +1421,13 @@ test('stage 3 fails closed when the evaluation LLM returns invalid JSON', async 
 
 const validEvaluation = {
   strategic_fit_score: 82,
+  score_components: {
+    trade_scope_fit: 23,
+    capacity_project_size_fit: 17,
+    region_delivery_model_fit: 13,
+    references_qualifications_fit: 18,
+    execution_value_creation_fit: 11,
+  },
   bid_recommendation: 'recommend_bid',
   rationale: 'Das Profil erfüllt die wesentlichen Anforderungen. Die Referenzen sind einschlägig.',
   strengths: ['Gültige ISO-9001-Zertifizierung', 'Einschlägige Referenzprojekte'],
@@ -1458,6 +1491,50 @@ function stage3Context(): ExecutionContext {
     ['geocode-distance', [{ json: { distance_km: 47.5, distance_note: '47,5 km zum Bauort' } }]],
   ]);
 }
+
+test('stage 3 requires the explicit score worksheet to match the headline score', async () => {
+  const candidate = {
+    ...validEvaluation,
+    score_components: {
+      ...validEvaluation.score_components,
+      trade_scope_fit: validEvaluation.score_components.trade_scope_fit - 1,
+    },
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    score_methodology: {
+      version: 1,
+      component_maxima: {
+        trade_scope_fit: 25,
+        capacity_project_size_fit: 20,
+        region_delivery_model_fit: 15,
+        references_qualifications_fit: 25,
+        execution_value_creation_fit: 15,
+      },
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.deepEqual(inspected[0][0].json.reconciliation_findings, [{
+      path: 'score_components',
+      problem: 'must_match_component_ranges_and_score',
+    }]);
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
 
 test('stage 3 applies the stored reference-evidence state deterministically', async () => {
   const requirements = [
@@ -2431,10 +2508,11 @@ test('stage 3 normalizes nested JSON strings and preserves a valid evaluation wi
     [{ json: llmResponse(nestedEvaluation) }],
     stage3Context(),
   );
+  const { score_components: _scoreComponents, ...expectedEvaluation } = validEvaluation;
 
   assert.deepEqual(result, [[{ json: {
     id: 'tender-id',
-    ...validEvaluation,
+    ...expectedEvaluation,
     processing_status: 'complete',
     distance_km: 47.5,
     distance_note: '47,5 km zum Bauort',

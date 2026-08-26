@@ -66,6 +66,35 @@ requirement extraction. Stage 3 remains conservative (`needs_review`) for that
 state. Shadow comparisons must distinguish profile effects from this upstream
 coverage limitation.
 
+## Evaluation methodology
+
+Stage 3 remains model-judged rather than a hard-coded rules engine, but both
+the first pass and the single repair pass now follow the same fixed sequence:
+
+1. judge every requirement only from its allowed direct profile evidence;
+2. label the decisive dependencies as confirmed evidence, an open evidence
+   check, or a confirmed deviation;
+3. calculate strategic fit from one five-dimension worksheet; and
+4. derive the bid recommendation from the validated requirement states.
+
+The worksheet allocates 25 points to trade/scope fit, 20 to capacity and
+project-size fit, 15 to region and delivery-model fit, 25 to references and
+qualifications, and 15 to execution/value-creation fit. Its neutral anchors sum
+to 50. The model may raise a dimension only for concrete positive evidence and
+lower it only for confirmed contrary evidence or a concrete execution burden.
+Missing profile evidence and `needs_review` remain neutral rather than becoming
+invented negative evidence. This preserves intelligent judgment inside each
+dimension while giving repeated runs the same order, anchors, and thresholds.
+The model returns all five component values; the workflow rejects a value
+outside its dimension range or a headline score that is not their exact sum.
+
+Risks use a matching evidence vocabulary and stable priority: confirmed
+blockers first, then critical submission-time checks, material operational or
+competitive uncertainty, and finally minor optimisation. A `needs_review`
+item must be described as open, never as confirmed missing. `high` is reserved
+for a confirmed blocker or an open item whose source explicitly says failure
+causes exclusion; otherwise material uncertainty is `medium`.
+
 ## Read-only shadow evaluations
 
 `npm run shadow:stage3 --` runs one Stage 3 comparison with a chosen source
