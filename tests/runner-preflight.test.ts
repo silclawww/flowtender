@@ -122,6 +122,131 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
   }
 });
 
+test('Stage 3 carries only validated evidence for an explicit re-evaluation', () => {
+  const companyEvidence = [{
+    evidence_id: 'profile-handelsregister',
+    title: 'Handelsregistereintrag',
+    category: 'Register',
+    status: 'verified',
+    note: 'Aktueller Auszug liegt vor',
+    cert_reference: 'HRB 123',
+    cert_expiry: null,
+    updated_at: '2026-08-05T19:00:00.000Z',
+    legacy_identity: true,
+  }];
+  const tenderEvidence = [{
+    evidence_id: 'exact-req-001',
+    title: 'Registerauszug',
+    category: 'Register',
+    requirement_id: 'REQ-001',
+    status: 'verified',
+    note: 'Freigabe liegt vor',
+    cert_reference: null,
+    cert_expiry: null,
+    updated_at: '2026-08-05T20:00:00.000Z',
+  }];
+  const preflight = preflightWorkflowPayload('tender-stage3-evaluation', {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+    company_requirement_evidence: companyEvidence,
+    tender_requirement_evidence: tenderEvidence,
+  });
+
+  assert.equal(preflight.trustedContext?.evaluation_reason, 'evidence_changes');
+  assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight), {
+    workflowId: 'tender-stage3-evaluation',
+    payload: {
+      tender_id: tenderId,
+      org_id: orgId,
+      company_requirement_evidence: companyEvidence,
+      tender_requirement_evidence: tenderEvidence,
+    },
+  });
+});
+
+test('normal Stage 3 runs also carry reusable and exact evidence', () => {
+  const companyEvidence = [{
+    evidence_id: 'insurance', title: 'Betriebshaftpflicht', category: 'Versicherung',
+    status: 'not_met', note: 'Deckung nicht ausreichend', cert_reference: null,
+    cert_expiry: null, updated_at: '2026-08-05T19:00:00.000Z', legacy_identity: true,
+  }];
+  const preflight = preflightWorkflowPayload('tender-stage3-evaluation', {
+    tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    company_requirement_evidence: companyEvidence,
+    tender_requirement_evidence: [],
+  });
+  assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight).payload, {
+    tender_id: tenderId,
+    org_id: orgId,
+    company_requirement_evidence: companyEvidence,
+    tender_requirement_evidence: [],
+  });
+});
+
+test('Stage 3 rejects malformed evidence before admission or state mutation', () => {
+  const valid = {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+  };
+  for (const tender_requirement_evidence of [
+    [{ requirement_id: 'REQ-001', status: 'verified' }],
+    [{
+      evidence_id: 'exact-req-001',
+      title: 'Freigabe',
+      category: 'Sonstiges',
+      requirement_id: 'REQ-001',
+      status: 'customer-controlled',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    }],
+    Array.from({ length: 26 }, (_, index) => ({
+      evidence_id: `evidence-${index}`,
+      title: `Requirement ${index}`,
+      category: 'Sonstiges',
+      requirement_id: `REQ-${index}`,
+      status: 'verified',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    })),
+  ]) {
+    assert.throws(
+      () => preflightWorkflowPayload('tender-stage3-evaluation', {
+        ...valid,
+        tender_requirement_evidence,
+      }),
+      /INVALID_WORKFLOW_PAYLOAD/,
+    );
+  }
+
+  assert.throws(() => preflightWorkflowPayload('tender-stage3-evaluation', {
+    ...valid,
+    company_requirement_evidence: Array.from({ length: 51 }, (_, index) => ({
+      evidence_id: `company-${index}`, title: `Evidence ${index}`, category: 'Other',
+      status: 'pending', note: null, cert_reference: null, cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true,
+    })),
+  }), /INVALID_WORKFLOW_PAYLOAD/);
+
+  assert.throws(() => preflightWorkflowPayload('tender-stage3-evaluation', {
+    ...valid,
+    company_requirement_evidence: [{
+      evidence_id: 'company-1', title: 'Evidence', category: 'Other', status: 'verified',
+      note: null, cert_reference: null, cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true,
+      org_id: otherOrgId,
+    }],
+  }), /INVALID_WORKFLOW_PAYLOAD/);
+});
 test('Stage 1 keeps source data but recursively strips actor and lease fields', () => {
   for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
     assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {
