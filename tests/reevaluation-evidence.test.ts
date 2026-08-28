@@ -169,13 +169,39 @@ test('exact evidence overrides reusable evidence and confirmed failure blocks a 
   ]);
   const result = await run('apply-requirement-evidence-policy', {
     strategic_fit_score: 80,
-    eligibility_requirements: [{ id: 'REQ-001', status: 'compliant', is_blocking: false }],
+    eligibility_requirements: [{
+      id: 'REQ-001', status: 'needs_review', is_blocking: false, profile_evidence: [],
+    }],
   }, context);
   assert.deepEqual((result.eligibility_requirements as Array<Record<string, unknown>>)[0].requirement_evidence, ['exact-register']);
+  assert.deepEqual((result.eligibility_requirements as Array<Record<string, unknown>>)[0].profile_evidence, ['requirement_evidence']);
   assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].status, 'not_met');
   assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].is_blocking, true);
   assert.equal(result.bid_recommendation, 'recommend_no_bid');
   assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 1);
+});
+
+test('exact verified evidence replaces stale model provenance with visible persisted provenance', async () => {
+  const prepared = await attach([], [{
+    ...common, evidence_id: 'exact-register', title: 'Registerprüfung', requirement_id: 'REQ-001',
+    status: 'verified', note: 'Aktueller Auszug geprüft', updated_at: '2026-08-05T20:02:00.000Z',
+  }]);
+  const context: ExecutionContext = new Map([
+    ['attach-requirement-evidence', [{ json: prepared }]],
+    ['load-requirements', [{ json: { requirements: sourceRequirements, eligibility_requirements: [] } }]],
+  ]);
+  const result = await run('apply-requirement-evidence-policy', {
+    strategic_fit_score: 70,
+    eligibility_requirements: [{
+      id: 'REQ-001', status: 'needs_review', is_blocking: false, profile_evidence: [],
+      assessment_reason: 'Noch offen',
+    }],
+  }, context);
+  const requirement = (result.eligibility_requirements as Array<Record<string, unknown>>)[0];
+  assert.equal(requirement.status, 'compliant');
+  assert.deepEqual(requirement.profile_evidence, ['requirement_evidence']);
+  assert.deepEqual(requirement.requirement_evidence, ['exact-register']);
+  assert.match(String(requirement.assessment_reason), /evidence_id=exact-register/);
 });
 
 test('not-applicable cannot clear a previous blocker and pending evidence withdraws prior positive proof', async () => {
@@ -202,8 +228,10 @@ test('not-applicable cannot clear a previous blocker and pending evidence withdr
   const [register, insurance] = result.eligibility_requirements as Array<Record<string, unknown>>;
   assert.equal(register.status, 'not_met');
   assert.equal(register.is_blocking, true);
+  assert.deepEqual(register.profile_evidence, ['requirement_evidence']);
   assert.equal(insurance.status, 'needs_review');
   assert.equal(insurance.is_blocking, false);
+  assert.deepEqual(insurance.profile_evidence, ['requirement_evidence']);
 });
 
 test('the final saved summary identifies evaluation time and the maximum evidence snapshot', async () => {
