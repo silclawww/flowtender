@@ -2236,6 +2236,88 @@ test('stage 3 review fallback preserves a validated blocker and never schedules 
   );
 });
 
+test('stage 3 evidence policy preserves the reconciliation fallback guard and downstream no-LV gate', async () => {
+  const runFallbackPath = async ({
+    coverage = completeRequirementsCoverage(),
+    exactEvidence = [],
+    blocker = false,
+    itemCount = 2,
+  }: {
+    coverage?: unknown;
+    exactEvidence?: Record<string, unknown>[];
+    blocker?: boolean;
+    itemCount?: number;
+  }) => {
+    const requirements = [
+      { id: 'REQ-001', is_critical: blocker },
+      { id: 'REQ-002', is_critical: false },
+    ];
+    const candidate = {
+      ...allCompliantEvaluation,
+      strategic_fit_score: 82,
+      eligibility_requirements: requirements.map((requirement) => ({
+        id: requirement.id,
+        status: blocker && requirement.id === 'REQ-001' ? 'not_met' : 'compliant',
+        is_blocking: blocker && requirement.id === 'REQ-001',
+      })),
+    };
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: {
+        id: 'tender-id', requirements, requirements_coverage: coverage,
+        eligibility_requirements: [], item_count: itemCount,
+      } }]],
+      ['prepare-context', [{ json: {} }]],
+      ['attach-requirement-evidence', [{ json: {
+        tender_requirement_evidence: exactEvidence,
+      } }]],
+      ['inspect-evaluation', [{ json: { reconciliation_candidate: candidate } }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]);
+    const fallback = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'build-review-fallback') },
+      [{ json: {
+        reconciliation_candidate: candidate,
+        reconciliation_source_requirements: requirements,
+      } }],
+      context,
+    );
+    const applied = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+      fallback[0],
+      context,
+    );
+    return codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+      applied[0],
+      context,
+    );
+  };
+
+  const guarded = await runFallbackPath({});
+  assert.equal(guarded[0][0].json.bid_recommendation, 'needs_review');
+
+  const withExactVerifiedEvidence = await runFallbackPath({
+    exactEvidence: [{
+      evidence_id: 'exact-req-001', requirement_id: 'REQ-001', title: 'Geprüfter Nachweis',
+      category: 'Sonstiges', status: 'verified', note: null, cert_reference: null,
+      cert_expiry: null, updated_at: '2026-09-04T12:00:00.000Z',
+    }],
+  });
+  assert.equal(withExactVerifiedEvidence[0][0].json.bid_recommendation, 'needs_review');
+
+  const incompleteCoverage = await runFallbackPath({
+    coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
+  });
+  assert.equal(incompleteCoverage[0][0].json.bid_recommendation, 'needs_review');
+
+  const blocker = await runFallbackPath({ blocker: true });
+  assert.equal(blocker[0][0].json.bid_recommendation, 'recommend_no_bid');
+
+  const noLv = await runFallbackPath({ itemCount: 0 });
+  assert.equal(noLv[0][0].json.bid_recommendation, 'incomplete');
+  assert.equal(noLv[0][0].json.strategic_fit_score, null);
+});
+
 test('stage 3 explicitly selects coverage with the requirement inputs', () => {
   const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
   assert.ok(select?.split(',').map((column) => column.trim()).includes('requirements_coverage'));
