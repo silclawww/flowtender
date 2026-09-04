@@ -1488,6 +1488,55 @@ test('stage 3 explicitly selects coverage with the requirement inputs', () => {
   assert.ok(select?.split(',').map((column) => column.trim()).includes('requirements_coverage'));
 });
 
+test('stage 3 explicitly selects the LV item count', () => {
+  const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
+  assert.ok(select?.split(',').map((column) => column.trim()).includes('item_count'));
+});
+
+test('stage 3 finalization suppresses the score and recommendation when no LV positions exist', async () => {
+  const evaluation = {
+    id: 'tender-id',
+    strategic_fit_score: 90,
+    bid_recommendation: 'recommend_bid',
+    processing_status: 'complete',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', item_count: 0 } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+    [{ json: evaluation }],
+    context,
+  );
+
+  assert.deepEqual(result, [[{ json: {
+    ...evaluation,
+    strategic_fit_score: null,
+    bid_recommendation: 'incomplete',
+  } }]]);
+});
+
+test('stage 3 finalization preserves a valid evaluation when LV positions exist', async () => {
+  const evaluation = {
+    id: 'tender-id',
+    strategic_fit_score: 82,
+    bid_recommendation: 'recommend_bid',
+    processing_status: 'complete',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', item_count: 97 } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+    [{ json: evaluation }],
+    context,
+  );
+
+  assert.deepEqual(result, [[{ json: evaluation }]]);
+});
+
 test('stage 3 preserves recommendations only for complete valid coverage', async () => {
   const result = await codeExecutor.execute(
     { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },

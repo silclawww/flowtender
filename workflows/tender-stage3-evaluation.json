@@ -17,7 +17,7 @@
       "name": "Load Requirements",
       "config": {
         "table": "tenders",
-        "select": "id, requirements, requirements_coverage, region, value_breakdown",
+        "select": "id, requirements, requirements_coverage, region, value_breakdown, item_count",
         "filters": [
           {
             "column": "id",
@@ -143,7 +143,7 @@
       "type": "code",
       "name": "Finalize Evaluation",
       "config": {
-        "code": "return [{ json: $json }];"
+        "code": "const tender = $('load-requirements').first().json;\nconst evaluation = tender.item_count === 0\n  ? { ...$json, strategic_fit_score: null, bid_recommendation: 'incomplete' }\n  : $json;\nreturn [{ json: evaluation }];"
       }
     },
     {
