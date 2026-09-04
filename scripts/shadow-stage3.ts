@@ -73,7 +73,7 @@ async function main(): Promise<void> {
 
   const tenderResult = await supabase
     .from('tenders')
-    .select('id,org_id,requirements,requirements_coverage,region,value_breakdown')
+    .select('id,org_id,requirements,requirements_coverage,region,value_breakdown,item_count')
     .eq('id', tenderId)
     .eq('org_id', sourceOrgId)
     .single() as unknown as ReadResult;
@@ -92,6 +92,7 @@ async function main(): Promise<void> {
     requirements_coverage: tenderResult.data.requirements_coverage,
     region: tenderResult.data.region,
     value_breakdown: tenderResult.data.value_breakdown,
+    item_count: tenderResult.data.item_count,
   };
   const artifact = await runStage3ShadowEvaluation({
     workflow: loadWorkflow('tender-stage3-evaluation'),

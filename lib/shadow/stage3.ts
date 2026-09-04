@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { codeExecutor } from '../nodes/code.ts';
+import { ifExecutor } from '../nodes/control.ts';
 import { httpRequestExecutor } from '../nodes/http-request.ts';
 import type {
   ExecutionContext,
@@ -14,7 +15,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const PROFILE_LABEL = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
 export interface Stage3ShadowEvaluationOutput extends Record<string, unknown> {
-  strategic_fit_score: number;
+  strategic_fit_score: number | null;
   bid_recommendation: string;
   eligibility_requirements: Array<Record<string, unknown>>;
 }
@@ -60,6 +61,8 @@ export interface RunStage3ShadowOptions {
   sourceOrgId: string;
   profileOrgId: string;
   profileLabel: string;
+  companyRequirementEvidence?: Array<Record<string, unknown>>;
+  tenderRequirementEvidence?: Array<Record<string, unknown>>;
   httpExecutor?: NodeExecutor;
   generatedAt?: string;
   runId?: string;
@@ -102,6 +105,8 @@ export async function runStage3ShadowEvaluation(
     sourceOrgId,
     profileOrgId,
     profileLabel,
+    companyRequirementEvidence = [],
+    tenderRequirementEvidence = [],
     httpExecutor = httpRequestExecutor,
     generatedAt = new Date().toISOString(),
     runId = randomUUID(),
@@ -123,6 +128,10 @@ export async function runStage3ShadowEvaluation(
   }
 
   const context: ExecutionContext = new Map([
+    ['trigger', [{ json: {
+      company_requirement_evidence: companyRequirementEvidence,
+      tender_requirement_evidence: tenderRequirementEvidence,
+    } }]],
     ['load-requirements', [{ json: tender }]],
     ['load-company-profile', [{ json: profile }]],
   ]);
@@ -146,6 +155,16 @@ export async function runStage3ShadowEvaluation(
 
   const runCode = (nodeId: string, input: ExecutionItem[]) =>
     execute(nodeId, 'code', input, codeExecutor);
+  const runIf = async (nodeId: string, input: ExecutionItem[]) => {
+    const node = requiredNode(workflow, nodeId, 'if');
+    executedNodes.push(nodeId);
+    const output = await ifExecutor.execute(node.config, input, context, { deadline });
+    const outputIndex = output[0]?.length ? 0 : 1;
+    const item = output[outputIndex]?.[0];
+    if (!item) throw new Error(`SHADOW_WORKFLOW_EMPTY:${nodeId}`);
+    context.set(nodeId, output[outputIndex]);
+    return { item, outputIndex };
+  };
   const runModel = async (nodeId: string, input: ExecutionItem[]) => {
     modelCalls++;
     return execute(nodeId, 'http_request', input, httpExecutor);
@@ -156,28 +175,36 @@ export async function runStage3ShadowEvaluation(
   if ((prepared.json.score_methodology as { version?: unknown } | undefined)?.version !== 1) {
     throw new Error('SHADOW_SCORE_METHODOLOGY_INVALID');
   }
-  const geocoded = await runCode('geocode-distance', [prepared]);
+  const attached = await runCode('attach-requirement-evidence', [prepared]);
+  const geocoded = await runCode('geocode-distance', [attached]);
   const initialDraft = await runModel('evaluate-llm', [geocoded]);
   const inspectedInitial = await runCode('inspect-evaluation', [initialDraft]);
+  const initialRoute = await runIf('route-evaluation-reconciliation', [inspectedInitial]);
   const reconciliationFindings = Array.isArray(inspectedInitial.json.reconciliation_findings)
     ? inspectedInitial.json.reconciliation_findings : [];
 
   let finalCandidate: ExecutionItem;
   let reconciliationUsed = false;
-  if (inspectedInitial.json.reconciliation_required === true) {
+  if (initialRoute.outputIndex === 0) {
     reconciliationUsed = true;
-    const repairedDraft = await runModel('reconcile-evaluation-llm', [inspectedInitial]);
+    const repairContext = await runCode('attach-evidence-to-repair', [initialRoute.item]);
+    const repairedDraft = await runModel('reconcile-evaluation-llm', [repairContext]);
     const inspectedRepair = await runCode('inspect-repaired-evaluation', [repairedDraft]);
-    finalCandidate = inspectedRepair.json.reconciliation_required === true
-      ? await runCode('build-review-fallback', [inspectedRepair])
-      : await runCode('parse-evaluation', [repairedDraft]);
+    const repairRoute = await runIf('route-repaired-evaluation', [inspectedRepair]);
+    finalCandidate = repairRoute.outputIndex === 0
+      ? await runCode('build-review-fallback', [repairRoute.item])
+      : await runCode('parse-evaluation', [repairRoute.item]);
   } else {
-    finalCandidate = await runCode('parse-evaluation', [initialDraft]);
+    finalCandidate = await runCode('parse-evaluation', [initialRoute.item]);
   }
-  const finalized = await runCode('finalize-evaluation', [finalCandidate]);
-  const preparedJson = prepared.json;
-  const evaluation = finalized.json as Stage3ShadowEvaluationOutput;
-  if (!Number.isInteger(evaluation.strategic_fit_score)
+  const evidenceApplied = await runCode('apply-requirement-evidence-policy', [finalCandidate]);
+  const finalized = await runCode('finalize-evaluation', [evidenceApplied]);
+  const withMetadata = await runCode('attach-evaluation-metadata', [finalized]);
+  const preparedJson = attached.json;
+  const evaluation = withMetadata.json as Stage3ShadowEvaluationOutput;
+  const validScore = Number.isInteger(evaluation.strategic_fit_score)
+    || (evaluation.strategic_fit_score === null && evaluation.bid_recommendation === 'incomplete');
+  if (!validScore
     || !Array.isArray(evaluation.eligibility_requirements)) {
     throw new Error('SHADOW_EVALUATION_INVALID');
   }
