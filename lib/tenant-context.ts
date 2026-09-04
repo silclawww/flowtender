@@ -40,11 +40,11 @@ type EvidenceFields = {
   updated_at: string;
 };
 
-type CompanyRequirementEvidence = EvidenceFields & {
+export type CompanyRequirementEvidence = EvidenceFields & {
   legacy_identity: true;
 };
 
-type TenderRequirementEvidence = EvidenceFields & {
+export type TenderRequirementEvidence = EvidenceFields & {
   requirement_id: string;
   status: EvidenceStatus | 'not_applicable';
 };
@@ -159,7 +159,7 @@ function evidenceFields(
   };
 }
 
-function companyRequirementEvidence(value: unknown): CompanyRequirementEvidence[] | undefined {
+export function companyRequirementEvidence(value: unknown): CompanyRequirementEvidence[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > 50) invalidPayload();
   const seen = new Set<string>();
@@ -176,7 +176,7 @@ function companyRequirementEvidence(value: unknown): CompanyRequirementEvidence[
   });
 }
 
-function tenderRequirementEvidence(value: unknown): TenderRequirementEvidence[] | undefined {
+export function tenderRequirementEvidence(value: unknown): TenderRequirementEvidence[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > 25) invalidPayload();
   const seen = new Set<string>();

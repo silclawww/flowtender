@@ -98,7 +98,12 @@ causes exclusion; otherwise material uncertainty is `medium`.
 ## Read-only shadow evaluations
 
 `npm run shadow:stage3 --` runs one Stage 3 comparison with a chosen source
-tender and company profile. It reads those two rows, then executes the exact
+tender and company profile. It reads those two rows plus the profile-scoped
+company evidence and source-tender evidence, all with explicit organisation
+and tender filters and the production 50/25 evidence limits. The completion
+rows are converted through the same Flowtender evidence contract, including
+the previous eligibility result needed to preserve a tender-scoped
+`not_applicable` blocker. It then executes the exact
 production preparation, evidence attachment, prompt, validation, routing,
 optional one-call repair, parser, evidence policy, no-LV finalisation, and
 evaluation-metadata nodes in memory. The same 200,000-character coverage

@@ -4,11 +4,13 @@ import { lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { loadWorkflow } from '../lib/runner/loader.ts';
-import { runStage3ShadowEvaluation } from '../lib/shadow/stage3.ts';
+import {
+  createStage3ShadowReadSource,
+  runStage3ShadowFromSource,
+} from '../lib/shadow/stage3-source.ts';
 import { createServiceClient } from '../lib/supabase/service.ts';
 
 const args = process.argv.slice(2);
-type ReadResult = { data: Record<string, unknown> | null; error: unknown };
 
 function option(name: string): string {
   const index = args.indexOf(name);
@@ -70,34 +72,10 @@ async function main(): Promise<void> {
   const outputDirectory = privateOutputDirectory(option('--output-dir'));
   await ensurePrivateOutputDirectory(outputDirectory);
   const supabase = createServiceClient();
-
-  const tenderResult = await supabase
-    .from('tenders')
-    .select('id,org_id,requirements,requirements_coverage,region,value_breakdown,item_count')
-    .eq('id', tenderId)
-    .eq('org_id', sourceOrgId)
-    .single() as unknown as ReadResult;
-  if (tenderResult.error || !tenderResult.data) throw new Error('Shadow tender not found');
-
-  const profileResult = await supabase
-    .from('company_profiles')
-    .select('*')
-    .eq('org_id', profileOrgId)
-    .single() as unknown as ReadResult;
-  if (profileResult.error || !profileResult.data) throw new Error('Shadow profile not found');
-
-  const tender = {
-    id: tenderResult.data.id,
-    requirements: tenderResult.data.requirements,
-    requirements_coverage: tenderResult.data.requirements_coverage,
-    region: tenderResult.data.region,
-    value_breakdown: tenderResult.data.value_breakdown,
-    item_count: tenderResult.data.item_count,
-  };
-  const artifact = await runStage3ShadowEvaluation({
+  const artifact = await runStage3ShadowFromSource({
+    source: createStage3ShadowReadSource(supabase),
     workflow: loadWorkflow('tender-stage3-evaluation'),
-    tender,
-    profile: profileResult.data,
+    tenderId,
     sourceOrgId,
     profileOrgId,
     profileLabel,

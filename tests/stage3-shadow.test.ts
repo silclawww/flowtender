@@ -299,11 +299,14 @@ test('Stage 3 shadow follows the production reconciliation fallback path in memo
 
 test('the shadow CLI has read-only database access and writes private non-overwriting artifacts', () => {
   const source = readFileSync('scripts/shadow-stage3.ts', 'utf8');
-  assert.match(source, /\.from\('tenders'\)[\s\S]*\.select\(/);
-  assert.match(source, /\.from\('company_profiles'\)[\s\S]*\.select\(/);
+  const readSource = readFileSync('lib/shadow/stage3-source.ts', 'utf8');
+  assert.match(source, /createStage3ShadowReadSource\(supabase\)/);
+  assert.match(readSource, /\.from\('tenders'\)[\s\S]*eligibility_requirements/);
+  assert.match(readSource, /\.from\('company_profiles'\)[\s\S]*\.select\(/);
+  assert.match(readSource, /\.from\('org_requirement_completions'\)/);
   assert.doesNotMatch(source, /\.(?:insert|update|upsert|delete|rpc)\s*\(/);
+  assert.doesNotMatch(readSource, /\.(?:insert|update|upsert|delete|rpc)\s*\(/);
   assert.match(source, /outside the repository/);
   assert.match(source, /flag: 'wx'/);
   assert.match(source, /mode: 0o600/);
-  assert.match(source, /requirements_coverage,region,value_breakdown,item_count/);
 });
