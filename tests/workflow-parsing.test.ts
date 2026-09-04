@@ -370,7 +370,7 @@ const completeRequirementsCoverage = (requirementCount = 2) => ({
   source_truncated: false,
   source_char_count: 5_000,
   extracted_char_count: 5_000,
-  source_char_limit: 12_000,
+  source_char_limit: 200_000,
   requirement_count: requirementCount,
   requirement_limit: 25,
   requirement_limit_reached: false,
@@ -411,7 +411,7 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
       source_truncated: false,
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
-      source_char_limit: 12_000,
+      source_char_limit: 200_000,
       requirement_count: 2,
       requirement_limit: 25,
       requirement_limit_reached: false,
@@ -420,9 +420,62 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
   assert.doesNotMatch(JSON.stringify(parsed.requirements_coverage), /Ausschreibungstext/);
 });
 
+test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', async () => {
+  const checkboxState = '[[SOURCE 216.pdf PAGE 3]] [ROW 001] [X] TRBS 2121 "qualification"';
+  const description = 'D'.repeat(60_000);
+  const groundReport = 'G'.repeat(80_000);
+  const { prepared } = await parseStage2Requirements({
+    pdf_texts_extracted: {
+      '211': 'Invitation form text',
+      description,
+      ground_report: groundReport,
+      '216': 'Form 216 boilerplate',
+      '216_checkbox_state': checkboxState,
+    },
+  }, 2);
+
+  assert.doesNotMatch(prepared.extraction_text as string, /216_checkbox_state|Form 216 boilerplate/);
+  assert.match(prepared.selected_checkbox_state as string, /\[ROW 001\] \[X\] TRBS 2121 ”qualification”/);
+  assert.doesNotMatch(prepared.selected_checkbox_state as string, /"qualification"/);
+  assert.match(prepared.extraction_text as string, /=== description ===\nD{100}/);
+  assert.match(prepared.extraction_text as string, /=== ground_report ===\nG{100}/);
+  assert.equal((prepared.requirements_coverage as Record<string, unknown>).source_truncated, false);
+  assert.ok((prepared.extraction_text as string).length > 140_000);
+});
+
+test('stage 2 deterministically retains every selected Form 216 row', async () => {
+  const checkboxState = [
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] Referenznachweise',
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 002] [ ] Nicht ausgewählte Eigenerklärung',
+    '[[SOURCE 216.pdf PAGE 2]] [ROW 003] [X] MVAS-Qualifikation',
+  ].join('\n');
+  const { parsed } = await parseStage2Requirements({
+    pdf_texts_extracted: { '216_checkbox_state': checkboxState },
+  }, 1);
+  const requirements = parsed.requirements as Array<Record<string, unknown>>;
+  const retainedSource = requirements.flatMap((requirement) => requirement.source_fragments as string[]).join('\n');
+
+  assert.equal(requirements.length, 3);
+  assert.match(retainedSource, /\[ROW 001\].*\[X\]/);
+  assert.match(retainedSource, /\[ROW 003\].*\[X\]/);
+  assert.doesNotMatch(retainedSource, /\[ROW 002\]/);
+  assert.equal((parsed.requirements_coverage as Record<string, unknown>).requirement_count, 3);
+});
+
+test('stage 2 extraction contract separates deterministic Form 216 state from technical source', () => {
+  const body = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm').config.body ?? '';
+
+  assert.match(body, /FORM 216.*außerhalb des Modells deterministisch verarbeitet/i);
+  assert.match(body, /maximal 16 Anforderungen/i);
+  assert.match(body, /einzigen Feld requirements/i);
+  assert.match(body, /jedes Start-\/Fertigstellungsdatum.*Sperrzeit\/Winterpause/i);
+  assert.match(body, /SOURCE.*PAGE.*source_fragments/i);
+  assert.match(body, /Baubeschreibung.*Baugrund/i);
+});
+
 test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
-  const truncated = await parseStage2Requirements('x'.repeat(12_001), 1);
-  assert.equal((truncated.prepared.extraction_text as string).length, 12_000);
+  const truncated = await parseStage2Requirements('x'.repeat(200_001), 1);
+  assert.equal((truncated.prepared.extraction_text as string).length, 200_000);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
 
@@ -471,7 +524,7 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
         source_truncated: false,
         source_char_count: 5_000,
         extracted_char_count: 5_000,
-        source_char_limit: 12_000,
+        source_char_limit: 200_000,
       },
     } }]]]),
   );
@@ -497,7 +550,7 @@ test('stage 2 normalizes harmless requirement representation differences', async
         source_truncated: false,
         source_char_count: 5_000,
         extracted_char_count: 5_000,
-        source_char_limit: 12_000,
+        source_char_limit: 200_000,
       },
     } }]]]),
   );
@@ -1512,7 +1565,7 @@ test('Stage 2 prefers an adequate PDF fallback over whitespace-only extracted fr
 test('stage 3 forces review for truncated, saturated, missing, or malformed coverage', async () => {
   const coverageVariants: unknown[] = [
     { ...completeRequirementsCoverage(), source_insufficient: true },
-    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
+    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 200_001, extracted_char_count: 200_000 },
     { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
     undefined,
     { source_truncated: false, requirement_limit_reached: false },
@@ -1825,8 +1878,8 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
     {
       ...completeRequirementsCoverage(),
       source_truncated: true,
-      source_char_count: 12_001,
-      extracted_char_count: 12_000,
+      source_char_count: 200_001,
+      extracted_char_count: 200_000,
     },
     { source_insufficient: true },
     undefined,
