@@ -712,6 +712,28 @@ test('stage 2 never includes more than 30 profile rules', async () => {
   assert.doesNotMatch(prompt, /Work 31/);
 });
 
+test('stage 2 scans past invalid leading profile rules until it accumulates valid rules', async () => {
+  const profileRules = [
+    ...Array.from({ length: 30 }, () => ({ id: 'duplicate', work_type: '', outcome: 'own' })),
+    { id: 'late-valid', work_type: 'Kanalbau', outcome: 'sub' },
+  ];
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+    ['load-company-profile', [{ json: { name: 'Beispiel GmbH', subcontracting_rules: profileRules } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: {} }],
+    context,
+  );
+  assert.deepEqual(result[0][0].json.classification_basis, {
+    mode: 'company_rules',
+    company_name: 'Beispiel GmbH',
+    rules: [{ id: 'late-valid', work_type: 'Kanalbau', outcome: 'sub' }],
+  });
+});
+
 test('stage 2 opts chunk classification into bounded per-item transport', () => {
   const node = workflowNode('tender-stage2-requirements.json', 'classify-workload');
   assert.equal(node.config.process_each_item, true);
@@ -984,6 +1006,31 @@ test('stage 2 persists only a bounded company-profile classification basis', asy
     company_name: 'Beispiel Tiefbau GmbH',
     rules: [{ id: 'asphalt', work_type: 'Asphalt', outcome: 'own', condition: 'bis 3,2 m' }],
     profile_updated_at: '2026-08-21T06:00:00.000Z',
+  });
+});
+
+test('stage 2 basis reconstruction scans past invalid leading rules', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const rules = [
+    ...Array.from({ length: 30 }, () => ({ id: 'duplicate', work_type: '', outcome: 'own' })),
+    { id: 'late-valid', work_type: 'Prüfungen', outcome: 'sub' },
+  ];
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: {
+      ...llmResponse({ positions: validWorkload }),
+      classification_basis: { mode: 'company_rules', company_name: 'Beispiel GmbH', rules },
+    } }],
+    context,
+  );
+  assert.deepEqual((result[0][0].json.value_breakdown as {
+    classification_basis: Record<string, unknown>;
+  }).classification_basis, {
+    mode: 'company_rules',
+    company_name: 'Beispiel GmbH',
+    rules: [{ id: 'late-valid', work_type: 'Prüfungen', outcome: 'sub' }],
   });
 });
 
