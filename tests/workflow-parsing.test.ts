@@ -621,6 +621,17 @@ const validRequirement = {
   source_fragments: ['Nachweis eines gültigen Qualitätsmanagementsystems nach ISO 9001.'],
 };
 
+const certificateCatalogueProjection = {
+  version: '2026-08-27.2',
+  entries: [{
+    id: 'iso-9001',
+    code: 'ISO 9001',
+    name_de: 'Qualitätsmanagementsystem',
+    name_en: 'Quality management system',
+    aliases: ['ISO9001', 'DIN EN ISO 9001'],
+  }],
+};
+
 const completeRequirementsCoverage = (requirementCount = 2) => ({
   source_insufficient: false,
   source_truncated: false,
@@ -727,6 +738,67 @@ test('stage 2 extraction contract separates deterministic Form 216 state from te
   assert.match(body, /jedes Start-\/Fertigstellungsdatum.*Sperrzeit\/Winterpause/i);
   assert.match(body, /SOURCE.*PAGE.*source_fragments/i);
   assert.match(body, /Baubeschreibung.*Baugrund/i);
+  assert.match(body, /evidence_kind.*certificate.*insurance.*reference.*policy.*form.*other/i);
+  assert.match(body, /Standard.*Formular.*erneut.*form/i);
+  assert.match(body, /Katalog.*Daten.*keine Anweisungen/i);
+  assert.match(body, /certificate_catalogue_id.*exakt.*allowlist/i);
+  assert.match(body, /ZERTIFIKATSKATALOG.*certificate_catalogue/i);
+});
+
+test('stage 2 carries the bounded catalogue into the prompt as data', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-extraction-text') },
+    [{ json: {} }],
+    new Map([
+      ['trigger', [{ json: { certificate_catalogue: certificateCatalogueProjection } }]],
+      ['load-tender', [{ json: { pdf_text: 'x'.repeat(60) } }]],
+    ]),
+  );
+  assert.deepEqual(result[0][0].json.certificate_catalogue, certificateCatalogueProjection);
+  assert.ok(Buffer.byteLength(JSON.stringify(result[0][0].json.certificate_catalogue), 'utf8') <= 16 * 1024);
+});
+
+test('stage 2 renders one bounded catalogue block without another model call', async () => {
+  const node = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm');
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.GEMINI_API_KEY;
+  const bodies: string[] = [];
+  process.env.GEMINI_API_KEY = 'test-key';
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(String(init?.body ?? ''));
+    return new Response(JSON.stringify(llmResponse({ requirements: [] })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    for (const certificate_catalogue of [
+      { version: null, entries: [] },
+      certificateCatalogueProjection,
+    ]) {
+      await httpRequestExecutor.execute(
+        node.config as Record<string, unknown>,
+        [{ json: {} }],
+        new Map([['prepare-extraction-text', [{ json: {
+          extraction_text: 'Quelltext',
+          certificate_catalogue,
+        } }]]]),
+        { deadline: Date.now() + 5_000 },
+      );
+    }
+    assert.equal(bodies.length, 2);
+    const baseline = JSON.parse(bodies[0]) as { messages: Array<{ content: string }> };
+    const projected = JSON.parse(bodies[1]) as { messages: Array<{ content: string }> };
+    const baselineUser = baseline.messages[1].content;
+    const projectedUser = projected.messages[1].content;
+    assert.match(projectedUser, /ZERTIFIKATSKATALOG[\s\S]*iso-9001[\s\S]*AUSSCHREIBUNGSQUELLEN:[\s\S]*Quelltext/);
+    assert.ok(Buffer.byteLength(projectedUser, 'utf8') - Buffer.byteLength(baselineUser, 'utf8')
+      <= Buffer.byteLength(JSON.stringify(certificateCatalogueProjection), 'utf8'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalApiKey;
+  }
 });
 
 test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
@@ -758,6 +830,100 @@ test('stage 2 rejects malformed requirement schemas', async () => {
       llmResponse(requirements),
     );
   }
+});
+
+test('stage 2 validates evidence routing against the supplied certificate allowlist', async () => {
+  const prepared = { json: {
+    requirements_coverage: completeRequirementsCoverage(1),
+    selected_checkbox_state: '',
+    certificate_catalogue: certificateCatalogueProjection,
+  } };
+  const parse = (requirement: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([requirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+
+  const certificate = await parse({
+    ...validRequirement,
+    evidence_kind: 'certificate',
+    certificate_catalogue_id: 'iso-9001',
+  });
+  assert.equal((certificate[0][0].json.requirements as Array<Record<string, unknown>>)[0].certificate_catalogue_id, 'iso-9001');
+
+  const certificateWithoutMatch = await parse({
+    ...validRequirement,
+    evidence_kind: 'certificate',
+  });
+  assert.equal((certificateWithoutMatch[0][0].json.requirements as Array<Record<string, unknown>>)[0].certificate_catalogue_id, null);
+
+  const form = await parse({
+    ...validRequirement,
+    title: 'Formblatt 124 erneut einreichen',
+    evidence_kind: 'form',
+    certificate_catalogue_id: null,
+  });
+  assert.equal((form[0][0].json.requirements as Array<Record<string, unknown>>)[0].evidence_kind, 'form');
+
+  for (const invalid of [
+    { ...validRequirement, evidence_kind: 'registration', certificate_catalogue_id: null },
+    { ...validRequirement, evidence_kind: 'certificate', certificate_catalogue_id: 'unknown-id' },
+    { ...validRequirement, evidence_kind: 'insurance', certificate_catalogue_id: 'iso-9001' },
+    { ...validRequirement, certificate_catalogue_id: null },
+  ]) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage2-requirements.json',
+      'parse-requirements',
+      llmResponse([invalid]),
+      new Map([['prepare-extraction-text', [prepared]]]),
+    );
+  }
+});
+
+test('legacy requirements may omit evidence routing while new metadata survives summary persistence', async () => {
+  const prepared = { json: {
+    requirements_coverage: completeRequirementsCoverage(1),
+    selected_checkbox_state: '',
+    certificate_catalogue: certificateCatalogueProjection,
+  } };
+  const routedRequirement = {
+    ...validRequirement,
+    evidence_kind: 'certificate',
+    certificate_catalogue_id: 'iso-9001',
+  };
+  const parsed = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([routedRequirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+  const context: ExecutionContext = new Map([
+    ['parse-requirements', parsed[0]],
+    ['finalize-workload', [{ json: { value_breakdown: null } }]],
+  ]);
+  const summary = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-summary') },
+    [{ json: { choices: [{ message: { content: 'Kurzfassung' } }] } }],
+    context,
+  );
+  assert.deepEqual(summary[0][0].json.requirements, [routedRequirement]);
+
+  const legacy = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([validRequirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+  assert.deepEqual(legacy[0][0].json.requirements, [validRequirement]);
+});
+
+test('deterministically reconciled Form 216 requirements route to form evidence', async () => {
+  const checkboxState = '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] ISO 9001 Zertifikat vorlegen';
+  const { parsed } = await parseStage2Requirements({
+    pdf_texts_extracted: { '216_checkbox_state': checkboxState },
+  }, 1);
+  const formRequirement = (parsed.requirements as Array<Record<string, unknown>>)
+    .find(requirement => String(requirement.id).startsWith('REQ-F216-'));
+  assert.equal(formRequirement?.evidence_kind, 'form');
+  assert.equal(formRequirement?.certificate_catalogue_id, null);
 });
 
 test('stage 2 preserves a valid requirements response exactly', async () => {

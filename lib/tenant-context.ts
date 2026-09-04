@@ -17,6 +17,7 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export const WORKFLOW_PAYLOAD_MAX_DEPTH = 64;
 export const WORKFLOW_PAYLOAD_MAX_NODES = 250_000;
 export const WORKFLOW_PAYLOAD_MAX_BYTES = 75 * 1024 * 1024;
+export const CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES = 16 * 1024;
 
 export interface TrustedAdmissionContext {
   tender_id: string;
@@ -52,6 +53,7 @@ export type TenderRequirementEvidence = EvidenceFields & {
 export interface WorkflowPayloadPreflight {
   source: Record<string, unknown>;
   trustedContext: TrustedAdmissionContext | null;
+  certificateCatalogue?: CertificateCatalogueProjection;
   companyRequirementEvidence?: CompanyRequirementEvidence[];
   tenderRequirementEvidence?: TenderRequirementEvidence[];
 }
@@ -65,6 +67,17 @@ interface PayloadLimits {
   maxDepth?: number;
   maxNodes?: number;
   maxBytes?: number;
+}
+
+export interface CertificateCatalogueProjection {
+  version: string;
+  entries: Array<{
+    id: string;
+    code: string;
+    name_de: string;
+    name_en: string;
+    aliases: string[];
+  }>;
 }
 
 export class WorkflowPayloadError extends Error {
@@ -127,6 +140,43 @@ function nullableString(value: unknown, maxLength: number): string | null | unde
 function requiredString(value: unknown, maxLength: number): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength
     ? value : undefined;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+}
+
+function catalogueString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string' || value.length > maxLength) return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function certificateCatalogueProjection(value: unknown): CertificateCatalogueProjection | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value) || !exactKeys(value, ['version', 'entries'])) invalidPayload();
+  const version = catalogueString(dataProperty(value, 'version'), 32);
+  const rawEntries = dataProperty(value, 'entries');
+  if (!version || !Array.isArray(rawEntries) || rawEntries.length > 60) invalidPayload();
+  const seen = new Set<string>();
+  const entries = rawEntries.map((raw) => {
+    if (!isPlainObject(raw)
+      || !exactKeys(raw, ['id', 'code', 'name_de', 'name_en', 'aliases'])) invalidPayload();
+    const id = catalogueString(dataProperty(raw, 'id'), 64);
+    const code = catalogueString(dataProperty(raw, 'code'), 40);
+    const nameDe = catalogueString(dataProperty(raw, 'name_de'), 80);
+    const nameEn = catalogueString(dataProperty(raw, 'name_en'), 80);
+    const rawAliases = dataProperty(raw, 'aliases');
+    if (!id || !code || !nameDe || !nameEn || seen.has(id)
+      || !Array.isArray(rawAliases) || rawAliases.length > 4) invalidPayload();
+    const aliases = [...new Set(rawAliases.map((alias) => catalogueString(alias, 60)))];
+    if (aliases.some((alias) => alias === undefined)) invalidPayload();
+    seen.add(id);
+    return { id, code, name_de: nameDe, name_en: nameEn, aliases: aliases as string[] };
+  });
+  const projection = { version, entries };
+  if (utf8Bytes(JSON.stringify(projection)) > CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES) invalidPayload();
+  return projection;
 }
 
 function evidenceFields(
@@ -315,9 +365,13 @@ export function preflightWorkflowPayload(
   const businessSource = wrapped ?? root;
   const companyEvidenceValue = dataProperty(businessSource, 'company_requirement_evidence');
   const tenderEvidenceValue = dataProperty(businessSource, 'tender_requirement_evidence');
+  const certificateCatalogueValue = dataProperty(businessSource, 'certificate_catalogue');
   if ((companyEvidenceValue !== undefined || tenderEvidenceValue !== undefined) && operation !== 'stage3') {
     invalidPayload();
   }
+  if (certificateCatalogueValue !== undefined && operation !== 'stage2') invalidPayload();
+  const certificateCatalogue = operation === 'stage2'
+    ? certificateCatalogueProjection(certificateCatalogueValue) : undefined;
   const companyEvidence = operation === 'stage3'
     ? companyRequirementEvidence(companyEvidenceValue) : undefined;
   const tenderEvidence = operation === 'stage3'
@@ -333,6 +387,7 @@ export function preflightWorkflowPayload(
   return {
     source: businessSource,
     trustedContext,
+    certificateCatalogue,
     companyRequirementEvidence: companyEvidence,
     tenderRequirementEvidence: tenderEvidence,
   };
@@ -355,6 +410,8 @@ export function materializeWorkflowPayload(
       payload: {
         tender_id: context.tender_id,
         org_id: context.org_id,
+        ...(context.operation === 'stage2' && preflight.certificateCatalogue
+          ? { certificate_catalogue: preflight.certificateCatalogue } : {}),
         ...(context.operation === 'stage3' && preflight.companyRequirementEvidence
           ? { company_requirement_evidence: preflight.companyRequirementEvidence } : {}),
         ...(context.operation === 'stage3' && preflight.tenderRequirementEvidence

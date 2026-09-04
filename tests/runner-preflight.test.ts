@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { WorkflowRunner } from '../lib/runner/runner.ts';
 import {
+  CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES,
   materializeWorkflowPayload,
   preflightWorkflowPayload,
 } from '../lib/tenant-context.ts';
@@ -120,6 +121,107 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
       payload: { tender_id: tenderId, org_id: orgId },
     });
   }
+});
+
+const certificateCatalogue = {
+  version: '2026-08-27.2',
+  entries: [{
+    id: ' iso-9001 ',
+    code: ' ISO 9001 ',
+    name_de: ' Qualitätsmanagementsystem ',
+    name_en: ' Quality management system ',
+    aliases: [' ISO9001 ', 'DIN EN ISO 9001'],
+  }],
+};
+
+test('Stage 2 materializes only the exact normalized certificate catalogue projection', () => {
+  const materialized = materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      certificate_catalogue: certificateCatalogue,
+    }),
+  );
+
+  assert.deepEqual(materialized.payload, {
+    tender_id: tenderId,
+    org_id: orgId,
+    certificate_catalogue: {
+      version: '2026-08-27.2',
+      entries: [{
+        id: 'iso-9001',
+        code: 'ISO 9001',
+        name_de: 'Qualitätsmanagementsystem',
+        name_en: 'Quality management system',
+        aliases: ['ISO9001', 'DIN EN ISO 9001'],
+      }],
+    },
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(materialized.payload.certificate_catalogue), 'utf8')
+    <= CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
+});
+
+test('Stage 2 accepts 60 valid catalogue entries and legacy payloads may omit the projection', () => {
+  const entries = Array.from({ length: 60 }, (_, index) => ({
+    id: `certificate-${index}`,
+    code: `CODE-${index}`,
+    name_de: `Zertifikat ${index}`,
+    name_en: `Certificate ${index}`,
+    aliases: [],
+  }));
+  const materialized = materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+      certificate_catalogue: { version: 'v1', entries },
+    }),
+  );
+  assert.equal((materialized.payload.certificate_catalogue as { entries: unknown[] }).entries.length, 60);
+  assert.deepEqual(materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    }),
+  ).payload, { tender_id: tenderId, org_id: orgId });
+});
+
+test('certificate catalogue sanitization rejects adversarial shapes, duplicate IDs and excess size', () => {
+  const entry = certificateCatalogue.entries[0];
+  const payload = (catalogue: unknown) => ({
+    tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    certificate_catalogue: catalogue,
+  });
+  const invalidCatalogues = [
+    { ...certificateCatalogue, injected: true },
+    { version: 'v1', entries: [{ ...entry, injected: true }] },
+    { version: 'v1', entries: [{ ...entry, aliases: 'ISO9001' }] },
+    { version: 'v1', entries: [{ ...entry, code: 'x'.repeat(41) }] },
+    { version: 'v1', entries: [entry, { ...entry, id: 'iso-9001' }] },
+    { version: 'v1', entries: Array.from({ length: 61 }, (_, index) => ({ ...entry, id: `id-${index}` })) },
+    {
+      version: 'v1',
+      entries: Array.from({ length: 60 }, (_, index) => ({
+        id: `id-${index}`,
+        code: 'c'.repeat(40),
+        name_de: 'd'.repeat(80),
+        name_en: 'e'.repeat(80),
+        aliases: Array.from({ length: 4 }, (_, alias) => `${alias}-${'a'.repeat(58)}`.slice(0, 60)),
+      })),
+    },
+  ];
+  for (const catalogue of invalidCatalogues) {
+    assert.throws(
+      () => preflightWorkflowPayload('tender-stage2-requirements', payload(catalogue)),
+      /INVALID_WORKFLOW_PAYLOAD/,
+    );
+  }
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage3-evaluation', payload(certificateCatalogue)),
+    /INVALID_WORKFLOW_PAYLOAD/,
+  );
 });
 
 test('Stage 3 carries only validated evidence for an explicit re-evaluation', () => {
