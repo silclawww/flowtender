@@ -135,12 +135,15 @@ export async function runStage3ShadowFromSource(
   if (![tenderId, sourceOrgId, profileOrgId].every((value) => UUID.test(value))) {
     throw new Error('SHADOW_SOURCE_SCOPE_INVALID');
   }
+  const exactProductionMode = sourceOrgId.toLowerCase() === profileOrgId.toLowerCase();
 
   const [tender, profile, companyRows, tenderRows] = await Promise.all([
     source.tenderById(tenderId, sourceOrgId),
     source.profileByOrg(profileOrgId),
     source.companyEvidenceByOrg(profileOrgId),
-    source.tenderEvidenceById(sourceOrgId, tenderId),
+    exactProductionMode
+      ? source.tenderEvidenceById(sourceOrgId, tenderId)
+      : Promise.resolve(undefined),
   ]);
   if (!tender || tender.id !== tenderId || tender.org_id !== sourceOrgId) {
     throw new Error('SHADOW_TENDER_NOT_FOUND');
@@ -148,15 +151,22 @@ export async function runStage3ShadowFromSource(
   if (!profile || profile.org_id !== profileOrgId) {
     throw new Error('SHADOW_PROFILE_NOT_FOUND');
   }
+  const evaluationTender = exactProductionMode
+    ? tender
+    : Object.fromEntries(
+      Object.entries(tender).filter(([key]) => key !== 'eligibility_requirements'),
+    );
 
   return runner({
     workflow,
-    tender,
+    tender: evaluationTender,
     profile,
     sourceOrgId,
     profileOrgId,
     profileLabel,
     companyRequirementEvidence: companyEvidence(companyRows),
-    tenderRequirementEvidence: exactTenderEvidence(tenderId, tenderRows),
+    ...(exactProductionMode ? {
+      tenderRequirementEvidence: exactTenderEvidence(tenderId, tenderRows ?? []),
+    } : {}),
   });
 }

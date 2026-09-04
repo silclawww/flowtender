@@ -97,7 +97,7 @@ test('shadow database source selects and scopes the four production-equivalent r
   ]);
 });
 
-test('shadow source scopes all reads and preserves a prior blocker behind exact tender N/A evidence', async () => {
+test('same-org shadow preserves a prior blocker behind exact tender N/A evidence', async () => {
   const calls: unknown[][] = [];
   const capture: { forwarded?: RunStage3ShadowOptions } = {};
   const previousBlocker = [{ id: 'REQ-001', status: 'not_met', is_blocking: true }];
@@ -189,15 +189,15 @@ test('shadow source scopes all reads and preserves a prior blocker behind exact 
     workflow: loadWorkflow('tender-stage3-evaluation'),
     tenderId,
     sourceOrgId,
-    profileOrgId,
-    profileLabel: 'comparison',
+    profileOrgId: sourceOrgId,
+    profileLabel: 'exact-production',
     runner,
   });
 
   assert.deepEqual(calls, [
     ['tender', tenderId, sourceOrgId],
-    ['profile', profileOrgId],
-    ['company-evidence', profileOrgId],
+    ['profile', sourceOrgId],
+    ['company-evidence', sourceOrgId],
     ['tender-evidence', sourceOrgId, tenderId],
   ]);
   assert.deepEqual(capture.forwarded?.tender.eligibility_requirements, previousBlocker);
@@ -234,20 +234,80 @@ test('shadow source scopes all reads and preserves a prior blocker behind exact 
   });
 });
 
-test('shadow source forwards empty validated evidence snapshots safely', async () => {
+test('cross-profile shadow excludes source tender decisions and never reads tender evidence', async () => {
+  const calls: unknown[][] = [];
   const capture: { forwarded?: RunStage3ShadowOptions } = {};
+  const previousBlocker = [{ id: 'REQ-001', status: 'not_met', is_blocking: true }];
+
   await runStage3ShadowFromSource({
     source: {
-      tenderById: async () => ({ id: tenderId, org_id: sourceOrgId, requirements: [], item_count: 0 }),
-      profileByOrg: async () => ({ org_id: profileOrgId, name: 'Profile GmbH' }),
-      companyEvidenceByOrg: async () => [],
-      tenderEvidenceById: async () => [],
+      tenderById: async (id, orgId) => {
+        calls.push(['tender', id, orgId]);
+        return {
+          id,
+          org_id: orgId,
+          requirements: [{ id: 'REQ-001' }],
+          eligibility_requirements: previousBlocker,
+          item_count: 1,
+        };
+      },
+      profileByOrg: async (orgId) => {
+        calls.push(['profile', orgId]);
+        return { org_id: orgId, name: 'Comparison GmbH' };
+      },
+      companyEvidenceByOrg: async (orgId) => {
+        calls.push(['company-evidence', orgId]);
+        return [{ ...completion, requirement_key: 'handelsregister' }];
+      },
+      tenderEvidenceById: async () => {
+        throw new Error('cross-profile tender evidence must not be read');
+      },
     },
     workflow: { id: 'tender-stage3-evaluation', name: '', nodes: [], edges: [] },
     tenderId,
     sourceOrgId,
     profileOrgId,
     profileLabel: 'comparison',
+    runner: async (options) => {
+      capture.forwarded = options;
+      return {} as Stage3ShadowArtifact;
+    },
+  });
+
+  assert.deepEqual(calls, [
+    ['tender', tenderId, sourceOrgId],
+    ['profile', profileOrgId],
+    ['company-evidence', profileOrgId],
+  ]);
+  assert.equal('eligibility_requirements' in (capture.forwarded?.tender ?? {}), false);
+  assert.equal(capture.forwarded?.tenderRequirementEvidence, undefined);
+  assert.deepEqual(capture.forwarded?.companyRequirementEvidence, [{
+    evidence_id: completion.id,
+    title: completion.title,
+    category: completion.category,
+    status: 'verified',
+    note: null,
+    cert_reference: null,
+    cert_expiry: null,
+    updated_at: completion.updated_at,
+    legacy_identity: true,
+  }]);
+});
+
+test('same-org shadow forwards empty validated evidence snapshots safely', async () => {
+  const capture: { forwarded?: RunStage3ShadowOptions } = {};
+  await runStage3ShadowFromSource({
+    source: {
+      tenderById: async () => ({ id: tenderId, org_id: sourceOrgId, requirements: [], item_count: 0 }),
+      profileByOrg: async () => ({ org_id: sourceOrgId, name: 'Profile GmbH' }),
+      companyEvidenceByOrg: async () => [],
+      tenderEvidenceById: async () => [],
+    },
+    workflow: { id: 'tender-stage3-evaluation', name: '', nodes: [], edges: [] },
+    tenderId,
+    sourceOrgId,
+    profileOrgId: sourceOrgId,
+    profileLabel: 'exact-production',
     runner: async (options) => {
       capture.forwarded = options;
       return {} as Stage3ShadowArtifact;
