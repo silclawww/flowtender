@@ -88,6 +88,40 @@ test('exact current catalogue evidence alone deterministically satisfies routed 
   assert.equal(byId.get('REQ-LEGACY')?.status, 'compliant');
 });
 
+test('a catalogue-only certificate row normalizes optional fields and exact-matches compliant', async () => {
+  const { attached, context } = await prepare({
+    name: 'Beispiel GmbH', updated_at: '2026-09-05T08:00:00.000Z',
+    certifications: ['ISO 9001'],
+    certificate_evidence: [{ catalogue_id: 'iso-9001' }],
+  });
+
+  assert.deepEqual(attached.exact_certificate_evidence, [{ catalogue_id: 'iso-9001', expires_at: null }]);
+  context.set('attach-requirement-evidence', [{ json: attached }]);
+  context.set('load-requirements', [{ json: { requirements, eligibility_requirements: [] } }]);
+  const result = await run('apply-requirement-evidence-policy', {
+    strategic_fit_score: 80,
+    score_methodology: scoreMethodology,
+    eligibility_requirements: requirements.map((item) => ({ id: item.id, status: 'compliant', is_blocking: false })),
+  }, context);
+  const byId = new Map((result.eligibility_requirements as Array<Record<string, unknown>>).map((item) => [item.id, item]));
+  assert.equal(byId.get('REQ-CERT')?.status, 'compliant');
+  assert.deepEqual(byId.get('REQ-CERT')?.requirement_evidence, ['certificate:iso-9001']);
+});
+
+test('certificate sanitization rejects unknown keys and malformed optional values', async () => {
+  for (const certificate of [
+    { catalogue_id: 'iso-9001', unexpected: true },
+    { catalogue_id: 'iso-9001', reference: 123 },
+    { catalogue_id: 'iso-9001', expires_at: '2026-02-30' },
+  ]) {
+    const { attached } = await prepare({
+      updated_at: '2026-09-05T08:00:00.000Z', certifications: ['ISO 9001'],
+      certificate_evidence: [certificate],
+    });
+    assert.deepEqual(attached.exact_certificate_evidence, []);
+  }
+});
+
 test('expired exact certificate stays review-only and exact tender N/A keeps prior source decision', async () => {
   const exactNa = {
     evidence_id: 'na-certificate', title: 'Unbestimmtes Zertifikat', category: 'Zertifizierung', status: 'not_applicable',
