@@ -154,6 +154,7 @@ test('evaluation metadata stamps the authoritative profile snapshot', async () =
       profile_snapshot_at: '2026-09-05T08:00:00.000Z',
       evidence_cutoff_at: '2026-09-05T09:00:00.000Z',
     } }]],
+    ['load-requirements', [{ json: { requirements: [] } }]],
   ]);
   const result = await run('attach-evaluation-metadata', { eligibility_summary: {} }, context);
   assert.deepEqual(result.eligibility_summary, {
@@ -161,6 +162,42 @@ test('evaluation metadata stamps the authoritative profile snapshot', async () =
     profile_snapshot_at: '2026-09-05T08:00:00.000Z',
     evidence_cutoff_at: '2026-09-05T09:00:00.000Z',
   });
+});
+
+test('evaluation metadata persists only the earliest validity boundary of applied compliant certificates', async () => {
+  const sourceRequirements = [
+    { id: 'REQ-A', evidence_kind: 'certificate', certificate_catalogue_id: 'cert-a' },
+    { id: 'REQ-B', evidence_kind: 'certificate', certificate_catalogue_id: 'cert-b' },
+    { id: 'REQ-EXPIRED', evidence_kind: 'certificate', certificate_catalogue_id: 'cert-expired' },
+    { id: 'REQ-UNAPPLIED', evidence_kind: 'certificate', certificate_catalogue_id: 'cert-unapplied' },
+  ];
+  const context: ExecutionContext = new Map([
+    ['attach-requirement-evidence', [{ json: {
+      profile_snapshot_at: '2026-09-05T08:00:00.000Z',
+      evidence_cutoff_at: '2026-09-05T08:00:00.000Z',
+      exact_certificate_evidence: [
+        { catalogue_id: 'cert-a', expires_at: '2099-01-31' },
+        { catalogue_id: 'cert-b', expires_at: '2098-12-01' },
+        { catalogue_id: 'cert-expired', expires_at: '2000-01-01' },
+        { catalogue_id: 'cert-unapplied', expires_at: '2097-10-01' },
+      ],
+    } }]],
+    ['load-requirements', [{ json: { requirements: sourceRequirements } }]],
+  ]);
+  const result = await run('attach-evaluation-metadata', {
+    eligibility_summary: {},
+    eligibility_requirements: [
+      { id: 'REQ-A', status: 'compliant', requirement_evidence: ['certificate:cert-a'] },
+      { id: 'REQ-B', status: 'compliant', requirement_evidence: ['certificate:cert-b'] },
+      { id: 'REQ-EXPIRED', status: 'compliant', requirement_evidence: ['certificate:cert-expired'] },
+      { id: 'REQ-UNAPPLIED', status: 'compliant', requirement_evidence: [] },
+    ],
+  }, context);
+  assert.equal(
+    (result.eligibility_summary as Record<string, unknown>).profile_evidence_valid_until,
+    '2098-12-01',
+  );
+  assert.doesNotMatch(JSON.stringify(result.eligibility_summary), /cert-|reference/);
 });
 
 test('structured certificate prompt growth is limited to needed requirement IDs', async () => {
