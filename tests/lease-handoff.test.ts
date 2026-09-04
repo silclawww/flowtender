@@ -126,8 +126,8 @@ test('evidence re-evaluation uses the receiver one-winner claim before workflow 
     title: 'Freigabe',
     category: 'Sonstiges',
     requirement_id: 'REQ-001',
-    status: 'verified',
-    note: null,
+    status: 'not_applicable',
+    note: 'Nach Quellprüfung nicht anwendbar',
     cert_reference: null,
     cert_expiry: null,
     updated_at: '2026-08-05T20:00:00.000Z',
@@ -135,7 +135,6 @@ test('evidence re-evaluation uses the receiver one-winner claim before workflow 
 
   const result = await runner.run('tender-stage3-evaluation', envelope({
     evaluation_reason: 'evidence_changes',
-    company_requirement_evidence: [],
     tender_requirement_evidence: tenderRequirementEvidence,
   }));
 
@@ -143,7 +142,6 @@ test('evidence re-evaluation uses the receiver one-winner claim before workflow 
   assert.deepEqual(result.response_payload, [{ json: {
     tender_id: tenderId,
     org_id: orgId,
-    company_requirement_evidence: [],
     tender_requirement_evidence: tenderRequirementEvidence,
   } }]);
   assert.equal(events[0], 'rpc:claim_pipeline_admission');

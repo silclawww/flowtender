@@ -48,7 +48,7 @@ export type CompanyRequirementEvidence = EvidenceFields & {
   legacy_identity: true;
 };
 
-export type TenderRequirementEvidence = EvidenceFields & {
+export type TenderRequirementEvidence = Omit<EvidenceFields, 'status'> & {
   requirement_id: string;
   status: EvidenceStatus | 'not_applicable';
 };
@@ -412,7 +412,7 @@ export function preflightWorkflowPayload(
   const companyEvidence = operation === 'stage3'
     ? companyRequirementEvidence(companyEvidenceValue) : undefined;
   const tenderEvidence = operation === 'stage3'
-    ? tenderRequirementEvidence(tenderEvidenceValue) : undefined;
+    ? tenderRequirementEvidence(tenderEvidenceValue)?.filter(item => item.status === 'not_applicable') : undefined;
   const trustedContext: TrustedAdmissionContext = {
     tender_id: canonicalUuid(dataProperty(root, 'tender_id'), wrapped ? dataProperty(wrapped, 'tender_id') : undefined),
     org_id: canonicalUuid(dataProperty(root, 'org_id'), wrapped ? dataProperty(wrapped, 'org_id') : undefined),
@@ -449,8 +449,6 @@ export function materializeWorkflowPayload(
         org_id: context.org_id,
         ...(context.operation === 'stage2' && preflight.certificateCatalogue
           ? { certificate_catalogue: preflight.certificateCatalogue } : {}),
-        ...(context.operation === 'stage3' && preflight.companyRequirementEvidence
-          ? { company_requirement_evidence: preflight.companyRequirementEvidence } : {}),
         ...(context.operation === 'stage3' && preflight.tenderRequirementEvidence
           ? { tender_requirement_evidence: preflight.tenderRequirementEvidence } : {}),
       },

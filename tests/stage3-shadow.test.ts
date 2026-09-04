@@ -32,7 +32,7 @@ const productionStage3Path = (
 const tender = {
   id: '11111111-1111-4111-8111-111111111111',
   requirements: [
-    { id: 'REQ-001', title: 'ISO 9001', is_critical: false },
+    { id: 'REQ-001', title: 'ISO 9001', is_critical: false, evidence_kind: 'certificate', certificate_catalogue_id: 'iso-9001' },
     { id: 'REQ-002', title: 'Zwei vergleichbare Referenzprojekte', is_critical: true },
   ],
   requirements_coverage: {
@@ -62,6 +62,8 @@ const profile = {
   regions: ['Bayern'],
   service_types: ['Öffentliche Auftraggeber'],
   certifications: ['ISO 9001'],
+  certificate_evidence: [{ catalogue_id: 'iso-9001', reference: 'QMS-42', expires_at: null }],
+  updated_at: '2026-08-25T11:59:00.000Z',
   project_size_min_eur: 50_000,
   project_size_max_eur: 5_000_000,
   trade_capacities: [],
@@ -94,7 +96,7 @@ test('Stage 3 shadow executes the production evaluation path without any persist
               id: 'REQ-001',
               status: 'compliant',
               is_blocking: false,
-              profile_evidence: ['certifications'],
+              profile_evidence: ['certificate_evidence'],
               assessment_reason: 'Die Zertifizierung ist im Profil hinterlegt.',
             },
             {
@@ -132,17 +134,6 @@ test('Stage 3 shadow executes the production evaluation path without any persist
     httpExecutor: model,
     generatedAt: '2026-08-25T12:00:00.000Z',
     runId: '44444444-4444-4444-8444-444444444444',
-    tenderRequirementEvidence: [{
-      evidence_id: 'exact-req-001',
-      requirement_id: 'REQ-001',
-      title: 'ISO 9001 geprüft',
-      category: 'Zertifizierung',
-      status: 'verified',
-      note: null,
-      cert_reference: null,
-      cert_expiry: null,
-      updated_at: '2026-08-25T11:59:00.000Z',
-    }],
   });
 
   assert.equal(modelCalls, 1);
@@ -163,7 +154,7 @@ test('Stage 3 shadow executes the production evaluation path without any persist
     execution_value_creation_fit: 10,
   });
   assert.equal(artifact.output.bid_recommendation, 'needs_review');
-  assert.deepEqual(artifact.output.eligibility_requirements[0].requirement_evidence, ['exact-req-001']);
+  assert.deepEqual(artifact.output.eligibility_requirements[0].requirement_evidence, ['certificate:iso-9001']);
   assert.equal(
     (artifact.output.eligibility_summary as Record<string, unknown>).evidence_cutoff_at,
     '2026-08-25T11:59:00.000Z',
@@ -215,7 +206,7 @@ test('Stage 3 shadow reuses the bounded repair path without falling through to p
         id: 'REQ-001',
         status: 'compliant',
         is_blocking: false,
-        profile_evidence: ['certifications'],
+        profile_evidence: ['certificate_evidence'],
         assessment_reason: 'Die Zertifizierung ist im Profil hinterlegt.',
       },
       {

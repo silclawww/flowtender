@@ -295,13 +295,12 @@ test('Stage 3 carries only validated evidence for an explicit re-evaluation', ()
     payload: {
       tender_id: tenderId,
       org_id: orgId,
-      company_requirement_evidence: companyEvidence,
-      tender_requirement_evidence: tenderEvidence,
+      tender_requirement_evidence: [],
     },
   });
 });
 
-test('normal Stage 3 runs also carry reusable and exact evidence', () => {
+test('normal Stage 3 validates but drops legacy company and non-N/A tender evidence', () => {
   const companyEvidence = [{
     evidence_id: 'insurance', title: 'Betriebshaftpflicht', category: 'Versicherung',
     status: 'not_met', note: 'Deckung nicht ausreichend', cert_reference: null,
@@ -315,7 +314,6 @@ test('normal Stage 3 runs also carry reusable and exact evidence', () => {
   assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight).payload, {
     tender_id: tenderId,
     org_id: orgId,
-    company_requirement_evidence: companyEvidence,
     tender_requirement_evidence: [],
   });
 });

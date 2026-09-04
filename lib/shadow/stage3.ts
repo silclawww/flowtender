@@ -61,7 +61,6 @@ export interface RunStage3ShadowOptions {
   sourceOrgId: string;
   profileOrgId: string;
   profileLabel: string;
-  companyRequirementEvidence?: Array<Record<string, unknown>>;
   tenderRequirementEvidence?: Array<Record<string, unknown>>;
   httpExecutor?: NodeExecutor;
   generatedAt?: string;
@@ -105,7 +104,6 @@ export async function runStage3ShadowEvaluation(
     sourceOrgId,
     profileOrgId,
     profileLabel,
-    companyRequirementEvidence = [],
     tenderRequirementEvidence = [],
     httpExecutor = httpRequestExecutor,
     generatedAt = new Date().toISOString(),
@@ -129,7 +127,6 @@ export async function runStage3ShadowEvaluation(
 
   const context: ExecutionContext = new Map([
     ['trigger', [{ json: {
-      company_requirement_evidence: companyRequirementEvidence,
       tender_requirement_evidence: tenderRequirementEvidence,
     } }]],
     ['load-requirements', [{ json: tender }]],

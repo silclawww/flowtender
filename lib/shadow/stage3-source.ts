@@ -1,7 +1,5 @@
 import {
-  companyRequirementEvidence,
   tenderRequirementEvidence,
-  type CompanyRequirementEvidence,
   type TenderRequirementEvidence,
 } from '../tenant-context.ts';
 import {
@@ -18,7 +16,6 @@ const EVIDENCE_COLUMNS = 'id,requirement_key,title,category,status,note,cert_ref
 export interface Stage3ShadowReadSource {
   tenderById: (tenderId: string, orgId: string) => Promise<Record<string, unknown> | null>;
   profileByOrg: (orgId: string) => Promise<Record<string, unknown> | null>;
-  companyEvidenceByOrg: (orgId: string) => Promise<unknown[]>;
   tenderEvidenceById: (orgId: string, tenderId: string) => Promise<unknown[]>;
 }
 
@@ -44,17 +41,6 @@ export function createStage3ShadowReadSource(
         .single();
       if (error) throw new Error('Shadow profile unavailable');
       return data;
-    },
-    companyEvidenceByOrg: async (orgId) => {
-      const { data, error } = await supabase
-        .from('org_requirement_completions')
-        .select(EVIDENCE_COLUMNS)
-        .eq('org_id', orgId)
-        .not('requirement_key', 'like', 'tender:%')
-        .order('updated_at', { ascending: false })
-        .limit(50);
-      if (error) throw new Error('Shadow evidence unavailable');
-      return data ?? [];
     },
     tenderEvidenceById: async (orgId, tenderId) => {
       const { data, error } = await supabase
@@ -95,19 +81,6 @@ function completionFields(row: Record<string, unknown>) {
   };
 }
 
-function companyEvidence(rows: unknown[]): CompanyRequirementEvidence[] {
-  if (rows.length > 50) throw new Error('SHADOW_COMPANY_EVIDENCE_INVALID');
-  const shaped = rows.flatMap((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-    const row = raw as Record<string, unknown>;
-    if (typeof row.requirement_key !== 'string'
-      || row.requirement_key.startsWith('tender:')
-      || row.status === 'not_applicable') return [];
-    return [{ ...completionFields(row), legacy_identity: true }];
-  });
-  return companyRequirementEvidence(shaped) ?? [];
-}
-
 function exactTenderEvidence(
   tenderId: string,
   rows: unknown[],
@@ -122,7 +95,7 @@ function exactTenderEvidence(
     if (!requirementId) return [];
     return [{ ...completionFields(row), requirement_id: requirementId }];
   });
-  return tenderRequirementEvidence(shaped) ?? [];
+  return (tenderRequirementEvidence(shaped) ?? []).filter(item => item.status === 'not_applicable');
 }
 
 export async function runStage3ShadowFromSource(
@@ -137,10 +110,9 @@ export async function runStage3ShadowFromSource(
   }
   const exactProductionMode = sourceOrgId.toLowerCase() === profileOrgId.toLowerCase();
 
-  const [tender, profile, companyRows, tenderRows] = await Promise.all([
+  const [tender, profile, tenderRows] = await Promise.all([
     source.tenderById(tenderId, sourceOrgId),
     source.profileByOrg(profileOrgId),
-    source.companyEvidenceByOrg(profileOrgId),
     exactProductionMode
       ? source.tenderEvidenceById(sourceOrgId, tenderId)
       : Promise.resolve(undefined),
@@ -164,7 +136,6 @@ export async function runStage3ShadowFromSource(
     sourceOrgId,
     profileOrgId,
     profileLabel,
-    companyRequirementEvidence: companyEvidence(companyRows),
     ...(exactProductionMode ? {
       tenderRequirementEvidence: exactTenderEvidence(tenderId, tenderRows ?? []),
     } : {}),

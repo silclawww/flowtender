@@ -62,7 +62,7 @@ async function attach(
   ]));
 }
 
-test('Stage 3 carries reusable and exact evidence into initial and repair sources with one cutoff', async () => {
+test('Stage 3 ignores reusable slugs and carries exact N/A into initial and repair sources', async () => {
   assert.match(node('load-requirements').config.select ?? '', /eligibility_requirements/);
   const company = [{
     ...common, evidence_id: 'company-register', title: 'Handelsregistereintrag',
@@ -70,16 +70,16 @@ test('Stage 3 carries reusable and exact evidence into initial and repair source
   }];
   const exact = [{
     ...common, evidence_id: 'exact-req-002', title: 'Versicherungsnachweis',
-    requirement_id: 'REQ-002', status: 'in_progress',
+    requirement_id: 'REQ-002', status: 'not_applicable', note: 'Nach Quellprüfung nicht anwendbar',
     updated_at: '2026-08-05T20:01:00.000Z',
   }];
   const prepared = await attach(company, exact);
   const promptData = JSON.parse(String(prepared.requirements_json));
-  assert.deepEqual(promptData.reusable_company_evidence, company);
+  assert.equal(promptData.reusable_company_evidence, undefined);
   assert.deepEqual(promptData.source_requirements[1].tender_requirement_evidence, exact[0]);
   assert.equal(prepared.evidence_cutoff_at, '2026-08-05T20:01:00.000Z');
-  assert.match(node('evaluate-llm').config.body ?? '', /legacy_identity=true/);
-  assert.match(node('reconcile-evaluation-llm').config.body ?? '', /WIEDERVERWENDBARE ANFORDERUNGSBELEGE/);
+  assert.doesNotMatch(node('evaluate-llm').config.body ?? '', /legacy_identity=true/);
+  assert.doesNotMatch(node('reconcile-evaluation-llm').config.body ?? '', /WIEDERVERWENDBARE ANFORDERUNGSBELEGE/);
 
   const context: ExecutionContext = new Map([
     ['attach-requirement-evidence', [{ json: prepared }]],
@@ -87,7 +87,7 @@ test('Stage 3 carries reusable and exact evidence into initial and repair source
   const repair = await run('attach-evidence-to-repair', {
     reconciliation_source_requirements: sourceRequirements,
   }, context);
-  assert.deepEqual(repair.reusable_company_evidence, company);
+  assert.equal(repair.reusable_company_evidence, undefined);
   assert.deepEqual(
     (repair.reconciliation_source_requirements as Array<Record<string, unknown>>)[1]
       .tender_requirement_evidence,
@@ -95,7 +95,7 @@ test('Stage 3 carries reusable and exact evidence into initial and repair source
   );
 });
 
-test('the model can cite paraphrased reusable evidence without a deterministic title match', async () => {
+test('legacy company rows cannot be cited or broaden any requirement status', async () => {
   const prepared = await attach([
     { ...common, evidence_id: 'company-register', title: 'Handelsregistereintrag', status: 'verified', updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true },
     { ...common, evidence_id: 'unrelated', title: 'ISO Umweltmanagement', status: 'not_met', updated_at: '2026-08-05T20:00:01.000Z', legacy_identity: true },
@@ -130,12 +130,18 @@ test('the model can cite paraphrased reusable evidence without a deterministic t
   const inspected = await run('inspect-evaluation', {
     choices: [{ message: { content: JSON.stringify(candidate) } }],
   }, context);
-  assert.equal(inspected.reconciliation_required, false);
+  assert.equal(inspected.reconciliation_required, true);
 
-  const result = await run('apply-requirement-evidence-policy', candidate, context);
+  const result = await run('apply-requirement-evidence-policy', {
+    ...candidate,
+    eligibility_requirements: (candidate.eligibility_requirements as Array<Record<string, unknown>>)
+      .map(item => item.id === 'REQ-001'
+        ? { ...item, status: 'needs_review', profile_evidence: [], assessment_reason: 'Kein Profilbeleg.' }
+        : item),
+  }, context);
   const [register, insurance] = result.eligibility_requirements as Array<Record<string, unknown>>;
-  assert.equal(register.status, 'compliant');
-  assert.deepEqual(register.profile_evidence, ['requirement_evidence']);
+  assert.equal(register.status, 'needs_review');
+  assert.deepEqual(register.profile_evidence, []);
   assert.equal(insurance.status, 'needs_review');
   assert.equal('requirement_evidence' in insurance, false);
 });
@@ -156,7 +162,7 @@ test('legacy company rows never automatically strengthen a model judgment', asyn
   assert.equal('requirement_evidence' in (result.eligibility_requirements as Array<Record<string, unknown>>)[0], false);
 });
 
-test('exact evidence overrides reusable evidence and confirmed failure blocks a critical requirement', async () => {
+test('historical exact non-N/A evidence cannot override a requirement', async () => {
   const prepared = await attach([
     { ...common, evidence_id: 'company-register', title: 'Handelsregistereintrag', status: 'verified', updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true },
   ], [{
@@ -173,15 +179,12 @@ test('exact evidence overrides reusable evidence and confirmed failure blocks a 
       id: 'REQ-001', status: 'needs_review', is_blocking: false, profile_evidence: [],
     }],
   }, context);
-  assert.deepEqual((result.eligibility_requirements as Array<Record<string, unknown>>)[0].requirement_evidence, ['exact-register']);
-  assert.deepEqual((result.eligibility_requirements as Array<Record<string, unknown>>)[0].profile_evidence, ['requirement_evidence']);
-  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].status, 'not_met');
-  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].is_blocking, true);
-  assert.equal(result.bid_recommendation, 'recommend_no_bid');
-  assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 1);
+  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].requirement_evidence, undefined);
+  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].status, 'needs_review');
+  assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 0);
 });
 
-test('exact verified evidence replaces stale model provenance with visible persisted provenance', async () => {
+test('historical exact verified evidence cannot promote stale model output', async () => {
   const prepared = await attach([], [{
     ...common, evidence_id: 'exact-register', title: 'Registerprüfung', requirement_id: 'REQ-001',
     status: 'verified', note: 'Aktueller Auszug geprüft', updated_at: '2026-08-05T20:02:00.000Z',
@@ -198,13 +201,11 @@ test('exact verified evidence replaces stale model provenance with visible persi
     }],
   }, context);
   const requirement = (result.eligibility_requirements as Array<Record<string, unknown>>)[0];
-  assert.equal(requirement.status, 'compliant');
-  assert.deepEqual(requirement.profile_evidence, ['requirement_evidence']);
-  assert.deepEqual(requirement.requirement_evidence, ['exact-register']);
-  assert.match(String(requirement.assessment_reason), /evidence_id=exact-register/);
+  assert.equal(requirement.status, 'needs_review');
+  assert.equal(requirement.requirement_evidence, undefined);
 });
 
-test('not-applicable cannot clear a previous blocker and pending evidence withdraws prior positive proof', async () => {
+test('not-applicable cannot clear a previous blocker and historical pending evidence is ignored', async () => {
   const prepared = await attach([], [
     { ...common, evidence_id: 'exact-register', title: 'Registerprüfung', requirement_id: 'REQ-001', status: 'not_applicable', note: 'Nach Prüfung nicht anwendbar', updated_at: '2026-08-05T20:02:00.000Z' },
     { ...common, evidence_id: 'exact-insurance', title: 'Versicherung', requirement_id: 'REQ-002', status: 'pending', updated_at: '2026-08-05T20:03:00.000Z' },
@@ -229,9 +230,9 @@ test('not-applicable cannot clear a previous blocker and pending evidence withdr
   assert.equal(register.status, 'not_met');
   assert.equal(register.is_blocking, true);
   assert.deepEqual(register.profile_evidence, ['requirement_evidence']);
-  assert.equal(insurance.status, 'needs_review');
+  assert.equal(insurance.status, 'compliant');
   assert.equal(insurance.is_blocking, false);
-  assert.deepEqual(insurance.profile_evidence, ['requirement_evidence']);
+  assert.equal(insurance.requirement_evidence, undefined);
 });
 
 test('the final saved summary identifies evaluation time and the maximum evidence snapshot', async () => {

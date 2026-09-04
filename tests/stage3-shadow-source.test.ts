@@ -28,12 +28,11 @@ const completion = {
   updated_at: '2026-09-04T12:00:00.000Z',
 };
 
-test('shadow database source selects and scopes the four production-equivalent reads', async () => {
+test('shadow database source selects and scopes the three production-equivalent reads', async () => {
   const queries: Array<{ table: string; calls: unknown[][] }> = [];
   const results = [
     { data: { id: tenderId }, error: null },
     { data: { org_id: profileOrgId }, error: null },
-    { data: [], error: null },
     { data: [], error: null },
   ];
   const supabase = {
@@ -57,7 +56,6 @@ test('shadow database source selects and scopes the four production-equivalent r
 
   await source.tenderById(tenderId, sourceOrgId);
   await source.profileByOrg(profileOrgId);
-  await source.companyEvidenceByOrg(profileOrgId);
   await source.tenderEvidenceById(sourceOrgId, tenderId);
 
   assert.deepEqual(queries, [
@@ -73,16 +71,6 @@ test('shadow database source selects and scopes the four production-equivalent r
     {
       table: 'company_profiles',
       calls: [['select', '*'], ['eq', 'org_id', profileOrgId], ['single']],
-    },
-    {
-      table: 'org_requirement_completions',
-      calls: [
-        ['select', 'id,requirement_key,title,category,status,note,cert_reference,cert_expiry,updated_at'],
-        ['eq', 'org_id', profileOrgId],
-        ['not', 'requirement_key', 'like', 'tender:%'],
-        ['order', 'updated_at', { ascending: false }],
-        ['limit', 50],
-      ],
     },
     {
       table: 'org_requirement_completions',
@@ -133,10 +121,6 @@ test('same-org shadow preserves a prior blocker behind exact tender N/A evidence
     profileByOrg: async (orgId: string) => {
       calls.push(['profile', orgId]);
       return { org_id: orgId, name: 'Profile GmbH' };
-    },
-    companyEvidenceByOrg: async (orgId: string) => {
-      calls.push(['company-evidence', orgId]);
-      return [{ ...completion, requirement_key: 'handelsregister' }];
     },
     tenderEvidenceById: async (orgId: string, id: string) => {
       calls.push(['tender-evidence', orgId, id]);
@@ -197,21 +181,9 @@ test('same-org shadow preserves a prior blocker behind exact tender N/A evidence
   assert.deepEqual(calls, [
     ['tender', tenderId, sourceOrgId],
     ['profile', sourceOrgId],
-    ['company-evidence', sourceOrgId],
     ['tender-evidence', sourceOrgId, tenderId],
   ]);
   assert.deepEqual(capture.forwarded?.tender.eligibility_requirements, previousBlocker);
-  assert.deepEqual(capture.forwarded?.companyRequirementEvidence, [{
-    evidence_id: completion.id,
-    title: completion.title,
-    category: completion.category,
-    status: 'verified',
-    note: null,
-    cert_reference: null,
-    cert_expiry: null,
-    updated_at: completion.updated_at,
-    legacy_identity: true,
-  }]);
   assert.deepEqual(capture.forwarded?.tenderRequirementEvidence, [{
     evidence_id: '55555555-5555-4555-8555-555555555555',
     requirement_id: 'REQ-001',
@@ -253,11 +225,11 @@ test('cross-profile shadow excludes source tender decisions and never reads tend
       },
       profileByOrg: async (orgId) => {
         calls.push(['profile', orgId]);
-        return { org_id: orgId, name: 'Comparison GmbH' };
-      },
-      companyEvidenceByOrg: async (orgId) => {
-        calls.push(['company-evidence', orgId]);
-        return [{ ...completion, requirement_key: 'handelsregister' }];
+        return {
+          org_id: orgId, name: 'Comparison GmbH', updated_at: '2026-09-04T12:00:00.000Z',
+          certifications: ['ISO 9001'],
+          certificate_evidence: [{ catalogue_id: 'iso-9001', reference: null, expires_at: null }],
+        };
       },
       tenderEvidenceById: async () => {
         throw new Error('cross-profile tender evidence must not be read');
@@ -277,21 +249,12 @@ test('cross-profile shadow excludes source tender decisions and never reads tend
   assert.deepEqual(calls, [
     ['tender', tenderId, sourceOrgId],
     ['profile', profileOrgId],
-    ['company-evidence', profileOrgId],
   ]);
   assert.equal('eligibility_requirements' in (capture.forwarded?.tender ?? {}), false);
   assert.equal(capture.forwarded?.tenderRequirementEvidence, undefined);
-  assert.deepEqual(capture.forwarded?.companyRequirementEvidence, [{
-    evidence_id: completion.id,
-    title: completion.title,
-    category: completion.category,
-    status: 'verified',
-    note: null,
-    cert_reference: null,
-    cert_expiry: null,
-    updated_at: completion.updated_at,
-    legacy_identity: true,
-  }]);
+  assert.deepEqual(capture.forwarded?.profile.certificate_evidence, [
+    { catalogue_id: 'iso-9001', reference: null, expires_at: null },
+  ]);
 });
 
 test('same-org shadow forwards empty validated evidence snapshots safely', async () => {
@@ -300,7 +263,6 @@ test('same-org shadow forwards empty validated evidence snapshots safely', async
     source: {
       tenderById: async () => ({ id: tenderId, org_id: sourceOrgId, requirements: [], item_count: 0 }),
       profileByOrg: async () => ({ org_id: sourceOrgId, name: 'Profile GmbH' }),
-      companyEvidenceByOrg: async () => [],
       tenderEvidenceById: async () => [],
     },
     workflow: { id: 'tender-stage3-evaluation', name: '', nodes: [], edges: [] },
@@ -314,6 +276,5 @@ test('same-org shadow forwards empty validated evidence snapshots safely', async
     },
   });
 
-  assert.deepEqual(capture.forwarded?.companyRequirementEvidence, []);
   assert.deepEqual(capture.forwarded?.tenderRequirementEvidence, []);
 });
