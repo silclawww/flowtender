@@ -18,6 +18,9 @@ export const WORKFLOW_PAYLOAD_MAX_DEPTH = 64;
 export const WORKFLOW_PAYLOAD_MAX_NODES = 250_000;
 export const WORKFLOW_PAYLOAD_MAX_BYTES = 75 * 1024 * 1024;
 export const CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES = 16 * 1024;
+export const CERTIFICATE_CATALOGUE_PROMPT_PREFIX =
+  'ZERTIFIKATSKATALOG (serverseitige Daten-Allowlist): \n';
+export const CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS = 2_400;
 
 export interface TrustedAdmissionContext {
   tender_id: string;
@@ -78,6 +81,12 @@ export interface CertificateCatalogueProjection {
     name_en: string;
     aliases: string[];
   }>;
+}
+
+export interface CertificateCataloguePromptTokenMeasurement {
+  estimatedTokens: number;
+  safeUpperBoundTokens: number;
+  utf8Bytes: number;
 }
 
 export class WorkflowPayloadError extends Error {
@@ -152,6 +161,32 @@ function catalogueString(value: unknown, maxLength: number): string | undefined 
   return trimmed ? trimmed : undefined;
 }
 
+/**
+ * Deterministic measurement of the exact prompt block. No local Gemini
+ * tokenizer is available, so UTF-8/4 plus one per non-ASCII code point tracks
+ * expected cost while the byte count is a tokenizer-independent safe upper
+ * bound for arbitrary UTF-8 input.
+ */
+export function measureCertificateCataloguePromptTokens(
+  promptBlock: string,
+): CertificateCataloguePromptTokenMeasurement {
+  const bytes = utf8Bytes(promptBlock);
+  const nonAsciiCodePoints = [...promptBlock]
+    .filter((character) => (character.codePointAt(0) ?? 0) > 0x7f)
+    .length;
+  return {
+    estimatedTokens: Math.ceil(bytes / 4) + nonAsciiCodePoints,
+    safeUpperBoundTokens: bytes,
+    utf8Bytes: bytes,
+  };
+}
+
+function assertCertificateCataloguePromptBudget(promptBlock: string): void {
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+  if (measurement.estimatedTokens > CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS
+    || measurement.safeUpperBoundTokens > CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES) invalidPayload();
+}
+
 export function certificateCatalogueProjection(value: unknown): CertificateCatalogueProjection | undefined {
   if (value === undefined) return undefined;
   if (!isPlainObject(value) || !exactKeys(value, ['version', 'entries'])) invalidPayload();
@@ -175,7 +210,9 @@ export function certificateCatalogueProjection(value: unknown): CertificateCatal
     return { id, code, name_de: nameDe, name_en: nameEn, aliases: aliases as string[] };
   });
   const projection = { version, entries };
-  if (utf8Bytes(JSON.stringify(projection)) > CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES) invalidPayload();
+  assertCertificateCataloguePromptBudget(
+    CERTIFICATE_CATALOGUE_PROMPT_PREFIX + JSON.stringify(projection),
+  );
   return projection;
 }
 

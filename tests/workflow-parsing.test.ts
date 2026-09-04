@@ -5,6 +5,11 @@ import test from 'node:test';
 import { codeExecutor } from '../lib/nodes/code.ts';
 import { ifExecutor } from '../lib/nodes/control.ts';
 import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
+import {
+  CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS,
+  CERTIFICATE_CATALOGUE_PROMPT_PREFIX,
+  measureCertificateCataloguePromptTokens,
+} from '../lib/tenant-context.ts';
 import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 
 interface WorkflowCodeNode {
@@ -792,6 +797,11 @@ test('stage 2 renders one bounded catalogue block without another model call', a
     const baselineUser = baseline.messages[1].content;
     const projectedUser = projected.messages[1].content;
     assert.match(projectedUser, /ZERTIFIKATSKATALOG[\s\S]*iso-9001[\s\S]*AUSSCHREIBUNGSQUELLEN:[\s\S]*Quelltext/);
+    const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX
+      + JSON.stringify(certificateCatalogueProjection);
+    assert.ok(projectedUser.startsWith(promptBlock));
+    assert.ok(measureCertificateCataloguePromptTokens(promptBlock).estimatedTokens
+      <= CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
     assert.ok(Buffer.byteLength(projectedUser, 'utf8') - Buffer.byteLength(baselineUser, 'utf8')
       <= Buffer.byteLength(JSON.stringify(certificateCatalogueProjection), 'utf8'));
   } finally {

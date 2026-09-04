@@ -3,8 +3,11 @@ import test from 'node:test';
 
 import { WorkflowRunner } from '../lib/runner/runner.ts';
 import {
+  CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS,
+  CERTIFICATE_CATALOGUE_PROMPT_PREFIX,
   CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES,
   materializeWorkflowPayload,
+  measureCertificateCataloguePromptTokens,
   preflightWorkflowPayload,
 } from '../lib/tenant-context.ts';
 import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
@@ -160,8 +163,11 @@ test('Stage 2 materializes only the exact normalized certificate catalogue proje
       }],
     },
   });
-  assert.ok(Buffer.byteLength(JSON.stringify(materialized.payload.certificate_catalogue), 'utf8')
-    <= CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
+  const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX
+    + JSON.stringify(materialized.payload.certificate_catalogue);
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+  assert.ok(measurement.estimatedTokens <= CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
+  assert.ok(measurement.safeUpperBoundTokens <= CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
 });
 
 test('Stage 2 accepts 60 valid catalogue entries and legacy payloads may omit the projection', () => {
@@ -220,6 +226,32 @@ test('certificate catalogue sanitization rejects adversarial shapes, duplicate I
   }
   assert.throws(
     () => preflightWorkflowPayload('tender-stage3-evaluation', payload(certificateCatalogue)),
+    /INVALID_WORKFLOW_PAYLOAD/,
+  );
+});
+
+test('catalogue growth below the byte ceiling still fails the estimated token budget', () => {
+  const entries = Array.from({ length: 40 }, (_, index) => ({
+    id: `id-${index}`,
+    code: `code-${index}`,
+    name_de: 'd'.repeat(80),
+    name_en: 'e'.repeat(80),
+    aliases: ['a'.repeat(60), 'b'.repeat(60)],
+  }));
+  const catalogue = { version: 'v1', entries };
+  const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX + JSON.stringify(catalogue);
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+
+  assert.ok(measurement.utf8Bytes < CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
+  assert.ok(measurement.estimatedTokens > CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      certificate_catalogue: catalogue,
+    }),
     /INVALID_WORKFLOW_PAYLOAD/,
   );
 });
