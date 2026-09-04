@@ -626,7 +626,7 @@ const completeRequirementsCoverage = (requirementCount = 2) => ({
   source_truncated: false,
   source_char_count: 5_000,
   extracted_char_count: 5_000,
-  source_char_limit: 12_000,
+  source_char_limit: 200_000,
   requirement_count: requirementCount,
   requirement_limit: 25,
   requirement_limit_reached: false,
@@ -667,7 +667,7 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
       source_truncated: false,
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
-      source_char_limit: 12_000,
+      source_char_limit: 200_000,
       requirement_count: 2,
       requirement_limit: 25,
       requirement_limit_reached: false,
@@ -676,9 +676,62 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
   assert.doesNotMatch(JSON.stringify(parsed.requirements_coverage), /Ausschreibungstext/);
 });
 
+test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', async () => {
+  const checkboxState = '[[SOURCE 216.pdf PAGE 3]] [ROW 001] [X] TRBS 2121 "qualification"';
+  const description = 'D'.repeat(60_000);
+  const groundReport = 'G'.repeat(80_000);
+  const { prepared } = await parseStage2Requirements({
+    pdf_texts_extracted: {
+      '211': 'Invitation form text',
+      description,
+      ground_report: groundReport,
+      '216': 'Form 216 boilerplate',
+      '216_checkbox_state': checkboxState,
+    },
+  }, 2);
+
+  assert.doesNotMatch(prepared.extraction_text as string, /216_checkbox_state|Form 216 boilerplate/);
+  assert.match(prepared.selected_checkbox_state as string, /\[ROW 001\] \[X\] TRBS 2121 ”qualification”/);
+  assert.doesNotMatch(prepared.selected_checkbox_state as string, /"qualification"/);
+  assert.match(prepared.extraction_text as string, /=== description ===\nD{100}/);
+  assert.match(prepared.extraction_text as string, /=== ground_report ===\nG{100}/);
+  assert.equal((prepared.requirements_coverage as Record<string, unknown>).source_truncated, false);
+  assert.ok((prepared.extraction_text as string).length > 140_000);
+});
+
+test('stage 2 deterministically retains every selected Form 216 row', async () => {
+  const checkboxState = [
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] Referenznachweise',
+    '[[SOURCE 216.pdf PAGE 1]] [ROW 002] [ ] Nicht ausgewählte Eigenerklärung',
+    '[[SOURCE 216.pdf PAGE 2]] [ROW 003] [X] MVAS-Qualifikation',
+  ].join('\n');
+  const { parsed } = await parseStage2Requirements({
+    pdf_texts_extracted: { '216_checkbox_state': checkboxState },
+  }, 1);
+  const requirements = parsed.requirements as Array<Record<string, unknown>>;
+  const retainedSource = requirements.flatMap((requirement) => requirement.source_fragments as string[]).join('\n');
+
+  assert.equal(requirements.length, 3);
+  assert.match(retainedSource, /\[ROW 001\].*\[X\]/);
+  assert.match(retainedSource, /\[ROW 003\].*\[X\]/);
+  assert.doesNotMatch(retainedSource, /\[ROW 002\]/);
+  assert.equal((parsed.requirements_coverage as Record<string, unknown>).requirement_count, 3);
+});
+
+test('stage 2 extraction contract separates deterministic Form 216 state from technical source', () => {
+  const body = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm').config.body ?? '';
+
+  assert.match(body, /FORM 216.*außerhalb des Modells deterministisch verarbeitet/i);
+  assert.match(body, /maximal 16 Anforderungen/i);
+  assert.match(body, /einzigen Feld requirements/i);
+  assert.match(body, /jedes Start-\/Fertigstellungsdatum.*Sperrzeit\/Winterpause/i);
+  assert.match(body, /SOURCE.*PAGE.*source_fragments/i);
+  assert.match(body, /Baubeschreibung.*Baugrund/i);
+});
+
 test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
-  const truncated = await parseStage2Requirements('x'.repeat(12_001), 1);
-  assert.equal((truncated.prepared.extraction_text as string).length, 12_000);
+  const truncated = await parseStage2Requirements('x'.repeat(200_001), 1);
+  assert.equal((truncated.prepared.extraction_text as string).length, 200_000);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
 
@@ -727,7 +780,7 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
         source_truncated: false,
         source_char_count: 5_000,
         extracted_char_count: 5_000,
-        source_char_limit: 12_000,
+        source_char_limit: 200_000,
       },
     } }]]]),
   );
@@ -753,7 +806,7 @@ test('stage 2 normalizes harmless requirement representation differences', async
         source_truncated: false,
         source_char_count: 5_000,
         extracted_char_count: 5_000,
-        source_char_limit: 12_000,
+        source_char_limit: 200_000,
       },
     } }]]]),
   );
@@ -780,7 +833,7 @@ const workloadClassificationKey = (index: number) => `POS-${String(index + 1).pa
 
 const validWorkload = [
   { id: workloadClassificationKey(0), type: 'eigen', reason: 'Typische Baustelleneinrichtung' },
-  { id: workloadClassificationKey(1), type: 'gemischt', reason: 'Lieferung und Einbau' },
+  { id: workloadClassificationKey(1), type: 'eigen', reason: 'Lieferung und Einbau' },
 ];
 
 test('stage 2 uses the same bounded index classification keys in the request and parser', () => {
@@ -823,15 +876,17 @@ test('stage 2 prepares every source position as bounded globally keyed chunks', 
   assert.equal(chunks[7].positions.at(-1)?.id, 'POS-908');
 });
 
-test('stage 2 uses bounded company-profile context without requesting item-level reasoning', async () => {
+test('stage 2 sanitizes and snapshots bounded company rules without requesting item-level reasoning', async () => {
   const context: ExecutionContext = new Map([
     ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: workloadPositions } }]],
     ['load-company-profile', [{ json: {
       name: 'Beispiel Tiefbau GmbH',
       trades: ['Tiefbau', 'Wasserbau'],
-      trade_capacities: [
-        { trade: 'Tiefbau', headcount: 38, currentUtilisationPct: 60 },
-        { trade: 'Wasserbau', headcount: 24, currentUtilisationPct: 70 },
+      subcontracting_rules: [
+        { id: ' asphalt ', work_type: ' Asphalt ', outcome: 'own', condition: ' bis 3,2 m ', ignored: true },
+        { id: 'tests', work_type: 'Prüfungen', outcome: 'sub' },
+        { id: 'tests', work_type: 'duplicate', outcome: 'own' },
+        { id: 'bad', work_type: '', outcome: 'sub' },
       ],
       updated_at: '2026-08-21T06:00:00.000Z',
     } }]],
@@ -850,16 +905,89 @@ test('stage 2 uses bounded company-profile context without requesting item-level
   const userPrompt = chunk.request_body.messages.find(message => message.role === 'user')?.content ?? '';
 
   assert.deepEqual(chunk.classification_basis, {
-    mode: 'company_profile',
+    mode: 'company_rules',
     company_name: 'Beispiel Tiefbau GmbH',
-    trades: ['Tiefbau', 'Wasserbau'],
+    rules: [
+      { id: 'asphalt', work_type: 'Asphalt', outcome: 'own', condition: 'bis 3,2 m' },
+      { id: 'tests', work_type: 'Prüfungen', outcome: 'sub' },
+    ],
     profile_updated_at: '2026-08-21T06:00:00.000Z',
   });
   assert.match(userPrompt, /Beispiel Tiefbau GmbH/);
-  assert.match(userPrompt, /"trades":\["Tiefbau","Wasserbau"\]/);
-  assert.match(userPrompt, /"capacity_trades":\["Tiefbau","Wasserbau"\]/);
-  assert.match(systemPrompt, /Unternehmensprofil/);
+  assert.match(userPrompt, /"subcontracting_rules":/);
+  assert.doesNotMatch(userPrompt, /ignored/);
+  assert.match(systemPrompt, /rule_id/);
+  assert.match(systemPrompt, /Lieferung mit Einbau[^.]+eigen/i);
+  assert.match(systemPrompt, /explizite[^.]+Fremdleistungsregel/i);
+  assert.doesNotMatch(systemPrompt, /gemischt/);
   assert.doesNotMatch(systemPrompt, /"reason"/);
+});
+
+test('stage 2 labels a no-rules profile as generic assumptions while keeping bounded trades context', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: workloadPositions } }]],
+    ['load-company-profile', [{ json: {
+      name: 'Beispiel Tiefbau GmbH',
+      trades: ['Tiefbau', 'x'.repeat(101), 'Wasserbau'],
+      subcontracting_rules: [],
+    } }]],
+  ]);
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: { requirements: [] } }],
+    context,
+  );
+  const chunk = result[0][0].json as {
+    classification_basis: Record<string, unknown>;
+    request_body: { messages: Array<{ role: string; content: string }> };
+  };
+  assert.deepEqual(chunk.classification_basis, {
+    mode: 'generic_fallback',
+    trades: ['Tiefbau', 'Wasserbau'],
+  });
+  assert.match(chunk.request_body.messages[1].content, /"trades":\["Tiefbau","Wasserbau"\]/);
+  assert.match(chunk.request_body.messages[1].content, /Annahmen ohne Firmenregeln/);
+});
+
+test('stage 2 never includes more than 30 profile rules', async () => {
+  const profileRules = Array.from({ length: 35 }, (_, index) => ({
+    id: `rule-${index + 1}`, work_type: `Work ${index + 1}`, outcome: index % 2 ? 'sub' : 'own',
+  }));
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+    ['load-company-profile', [{ json: { name: 'Beispiel GmbH', subcontracting_rules: profileRules } }]],
+  ]);
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: {} }],
+    context,
+  );
+  const basis = result[0][0].json.classification_basis as { rules: unknown[] };
+  const prompt = (result[0][0].json.request_body as { messages: Array<{ content: string }> }).messages[1].content;
+  assert.equal(basis.rules.length, 30);
+  assert.doesNotMatch(prompt, /Work 31/);
+});
+
+test('stage 2 scans past invalid leading profile rules until it accumulates valid rules', async () => {
+  const profileRules = [
+    ...Array.from({ length: 30 }, () => ({ id: 'duplicate', work_type: '', outcome: 'own' })),
+    { id: 'late-valid', work_type: 'Kanalbau', outcome: 'sub' },
+  ];
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+    ['load-company-profile', [{ json: { name: 'Beispiel GmbH', subcontracting_rules: profileRules } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
+    [{ json: {} }],
+    context,
+  );
+  assert.deepEqual(result[0][0].json.classification_basis, {
+    mode: 'company_rules',
+    company_name: 'Beispiel GmbH',
+    rules: [{ id: 'late-valid', work_type: 'Kanalbau', outcome: 'sub' }],
+  });
 });
 
 test('stage 2 opts chunk classification into bounded per-item transport', () => {
@@ -879,6 +1007,10 @@ test('stage 2 combines bounded chunk responses and nested JSON fields without lo
   }));
   const baseContext: ExecutionContext = new Map([
     ['load-tender', [{ json: { trade_category: 'Kanalbau', gaeb_positions: positions } }]],
+    ['load-company-profile', [{ json: {
+      name: 'Beispiel GmbH',
+      subcontracting_rules: [{ id: 'own-work', work_type: 'Kanalbau', outcome: 'own' }],
+    } }]],
   ]);
   const prepared = (await codeExecutor.execute(
     { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') },
@@ -890,6 +1022,7 @@ test('stage 2 combines bounded chunk responses and nested JSON fields without lo
     const classifications = chunkPositions.map(position => ({
       id: position.id,
       type: 'eigen',
+      rule_id: 'own-work',
       reason: 'Typische Eigenleistung',
     }));
     const groups = [{
@@ -925,6 +1058,8 @@ test('stage 2 combines bounded chunk responses and nested JSON fields without lo
     classified_total: number;
     unclassified_total: number;
     semantic_groups: Array<{ id: string }>;
+    classification_basis: Record<string, unknown>;
+    positions: Array<{ rule_id: string | null }>;
   };
 
   assert.deepEqual({
@@ -934,6 +1069,7 @@ test('stage 2 combines bounded chunk responses and nested JSON fields without lo
     classified_total: breakdown.classified_total,
     unclassified_total: breakdown.unclassified_total,
     group_ids: breakdown.semantic_groups.map(group => group.id),
+    rule_ids: [...new Set(breakdown.positions.map(position => position.rule_id))],
   }, {
     grouping_status: 'needs_review',
     mode: 'chunked_needs_merge',
@@ -941,6 +1077,12 @@ test('stage 2 combines bounded chunk responses and nested JSON fields without lo
     classified_total: 121,
     unclassified_total: 0,
     group_ids: ['CHUNK-01-GROUP-001', 'CHUNK-02-GROUP-001'],
+    rule_ids: ['own-work'],
+  });
+  assert.deepEqual(breakdown.classification_basis, {
+    mode: 'company_rules',
+    company_name: 'Beispiel GmbH',
+    rules: [{ id: 'own-work', work_type: 'Kanalbau', outcome: 'own' }],
   });
 });
 
@@ -1044,6 +1186,7 @@ test('stage 2 rejects incomplete, duplicate, unknown, and malformed workload cla
     [validWorkload[0], { ...validWorkload[0] }],
     [validWorkload[0], { ...validWorkload[1], id: 'unknown-position' }],
     [validWorkload[0], { ...validWorkload[1], type: 'subcontracted' }],
+    [validWorkload[0], { ...validWorkload[1], type: 'gemischt' }],
     { positions: validWorkload, items: validWorkload },
   ];
 
@@ -1072,10 +1215,10 @@ test('stage 2 preserves enriched workload output and summary for a valid wrapper
   const output = result[0][0].json as Record<string, unknown>;
   assert.deepEqual({ ...output, value_breakdown: undefined }, { ...response, value_breakdown: undefined });
   assert.deepEqual(output.value_breakdown, {
-    summary: { eigen: 1, fremd: 0, liefer: 0, gemischt: 1, total: 2 },
+    summary: { eigen: 2, fremd: 0, liefer: 0, total: 2 },
     positions: [
-      { ...workloadPositions[0], type: 'eigen' },
-      { ...workloadPositions[1], type: 'gemischt' },
+      { ...workloadPositions[0], type: 'eigen', rule_id: null },
+      { ...workloadPositions[1], type: 'eigen', rule_id: null },
     ],
     classification_basis: { mode: 'generic_fallback' },
     semantic_groups: [],
@@ -1097,9 +1240,9 @@ test('stage 2 persists only a bounded company-profile classification basis', asy
   const response = {
     ...llmResponse({ positions: validWorkload }),
     classification_basis: {
-      mode: 'company_profile',
+      mode: 'company_rules',
       company_name: 'Beispiel Tiefbau GmbH',
-      trades: ['Tiefbau', 'Wasserbau'],
+      rules: [{ id: 'asphalt', work_type: 'Asphalt', outcome: 'own', condition: 'bis 3,2 m' }],
       profile_updated_at: '2026-08-21T06:00:00.000Z',
       ignored: 'not persisted',
     },
@@ -1115,11 +1258,86 @@ test('stage 2 persists only a bounded company-profile classification basis', asy
   };
 
   assert.deepEqual(breakdown.classification_basis, {
-    mode: 'company_profile',
+    mode: 'company_rules',
     company_name: 'Beispiel Tiefbau GmbH',
-    trades: ['Tiefbau', 'Wasserbau'],
+    rules: [{ id: 'asphalt', work_type: 'Asphalt', outcome: 'own', condition: 'bis 3,2 m' }],
     profile_updated_at: '2026-08-21T06:00:00.000Z',
   });
+});
+
+test('stage 2 basis reconstruction scans past invalid leading rules', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const rules = [
+    ...Array.from({ length: 30 }, () => ({ id: 'duplicate', work_type: '', outcome: 'own' })),
+    { id: 'late-valid', work_type: 'Prüfungen', outcome: 'sub' },
+  ];
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: {
+      ...llmResponse({ positions: validWorkload }),
+      classification_basis: { mode: 'company_rules', company_name: 'Beispiel GmbH', rules },
+    } }],
+    context,
+  );
+  assert.deepEqual((result[0][0].json.value_breakdown as {
+    classification_basis: Record<string, unknown>;
+  }).classification_basis, {
+    mode: 'company_rules',
+    company_name: 'Beispiel GmbH',
+    rules: [{ id: 'late-valid', work_type: 'Prüfungen', outcome: 'sub' }],
+  });
+});
+
+test('stage 2 persists known matching rule IDs and rejects unknown or conflicting IDs', async () => {
+  const basis = {
+    mode: 'company_rules',
+    company_name: 'Beispiel Tiefbau GmbH',
+    rules: [
+      { id: 'own-rule', work_type: 'Asphalt', outcome: 'own' },
+      { id: 'sub-rule', work_type: 'Prüfungen', outcome: 'sub' },
+    ],
+  };
+  const context: ExecutionContext = new Map([
+    ['load-tender', [{ json: { gaeb_positions: workloadPositions } }]],
+  ]);
+  const accepted = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-workload') },
+    [{ json: {
+      ...llmResponse({ positions: [
+        { id: 'POS-001', type: 'eigen', rule_id: 'own-rule' },
+        { id: 'POS-002', type: 'fremd', rule_id: 'sub-rule' },
+      ] }),
+      classification_basis: basis,
+    } }],
+    context,
+  );
+  assert.deepEqual((accepted[0][0].json.value_breakdown as {
+    positions: Array<{ rule_id?: string }>;
+  }).positions.map(position => position.rule_id), ['own-rule', 'sub-rule']);
+
+  for (const positions of [
+    [
+      { id: 'POS-001', type: 'eigen', rule_id: 'unknown' },
+      { id: 'POS-002', type: 'eigen', rule_id: null },
+    ],
+    [
+      { id: 'POS-001', type: 'fremd', rule_id: 'own-rule' },
+      { id: 'POS-002', type: 'eigen', rule_id: null },
+    ],
+    [
+      { id: 'POS-001', type: 'eigen', rule_id: 'sub-rule' },
+      { id: 'POS-002', type: 'eigen', rule_id: null },
+    ],
+  ]) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage2-requirements.json',
+      'parse-workload',
+      { ...llmResponse({ positions }), classification_basis: basis },
+      context,
+    );
+  }
 });
 
 test('stage 2 preserves LLM semantic groups while deriving source coverage and quantities', async () => {
@@ -1389,10 +1607,10 @@ test('stage 2 classifies duplicate file-local position IDs independently and sav
     positions: Record<string, unknown>[];
   };
 
-  assert.deepEqual(breakdown.summary, { eigen: 1, fremd: 1, liefer: 0, gemischt: 0, total: 2 });
+  assert.deepEqual(breakdown.summary, { eigen: 1, fremd: 1, liefer: 0, total: 2 });
   assert.deepEqual(breakdown.positions, [
-    { ...positions[0], type: 'eigen' },
-    { ...positions[1], type: 'fremd' },
+    { ...positions[0], type: 'eigen', rule_id: null },
+    { ...positions[1], type: 'fremd', rule_id: null },
   ]);
 });
 
@@ -1409,6 +1627,27 @@ test('stage 2 preserves the no-GAEB workload early exit without parsing the LLM 
   );
 
   assert.deepEqual(result, [[{ json: { ...input, value_breakdown: null } }]]);
+});
+
+test('stage 3 counts legacy mixed positions as own work without a mixed label', async () => {
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      region: 'München',
+      requirements: [],
+      value_breakdown: {
+        summary: { eigen: 1, fremd: 1, liefer: 0, gemischt: 2, total: 4 },
+      },
+    } }]],
+    ['load-company-profile', [{ json: { name: 'Beispiel GmbH', regions: [] } }]],
+  ]);
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    context,
+  );
+  assert.equal(result[0][0].json.value_breakdown_note, '75% Eigenleistung (3 Pos.), 25% Fremdleistung (1 Pos.)');
+  assert.doesNotMatch(String(result[0][0].json.value_breakdown_note), /Mischleistung/);
 });
 
 test('stage 3 fails closed when the evaluation LLM returns invalid JSON', async () => {
@@ -2002,6 +2241,55 @@ test('stage 3 explicitly selects coverage with the requirement inputs', () => {
   assert.ok(select?.split(',').map((column) => column.trim()).includes('requirements_coverage'));
 });
 
+test('stage 3 explicitly selects the LV item count', () => {
+  const select = workflowNode('tender-stage3-evaluation.json', 'load-requirements').config.select;
+  assert.ok(select?.split(',').map((column) => column.trim()).includes('item_count'));
+});
+
+test('stage 3 finalization suppresses the score and recommendation when no LV positions exist', async () => {
+  const evaluation = {
+    id: 'tender-id',
+    strategic_fit_score: 90,
+    bid_recommendation: 'recommend_bid',
+    processing_status: 'complete',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', item_count: 0 } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+    [{ json: evaluation }],
+    context,
+  );
+
+  assert.deepEqual(result, [[{ json: {
+    ...evaluation,
+    strategic_fit_score: null,
+    bid_recommendation: 'incomplete',
+  } }]]);
+});
+
+test('stage 3 finalization preserves a valid evaluation when LV positions exist', async () => {
+  const evaluation = {
+    id: 'tender-id',
+    strategic_fit_score: 82,
+    bid_recommendation: 'recommend_bid',
+    processing_status: 'complete',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', item_count: 97 } }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+    [{ json: evaluation }],
+    context,
+  );
+
+  assert.deepEqual(result, [[{ json: evaluation }]]);
+});
+
 test('stage 3 preserves recommendations only for complete valid coverage', async () => {
   const result = await codeExecutor.execute(
     { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
@@ -2079,7 +2367,7 @@ test('Stage 2 prefers an adequate PDF fallback over whitespace-only extracted fr
 test('stage 3 forces review for truncated, saturated, missing, or malformed coverage', async () => {
   const coverageVariants: unknown[] = [
     { ...completeRequirementsCoverage(), source_insufficient: true },
-    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 12_001, extracted_char_count: 12_000 },
+    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 200_001, extracted_char_count: 200_000 },
     { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
     undefined,
     { source_truncated: false, requirement_limit_reached: false },
@@ -2392,8 +2680,8 @@ test('stage 3 requires no-bid for blockers regardless of score or coverage overr
     {
       ...completeRequirementsCoverage(),
       source_truncated: true,
-      source_char_count: 12_001,
-      extracted_char_count: 12_000,
+      source_char_count: 200_001,
+      extracted_char_count: 200_000,
     },
     { source_insufficient: true },
     undefined,
