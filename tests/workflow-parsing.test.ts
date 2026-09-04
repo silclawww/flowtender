@@ -2397,6 +2397,79 @@ test('stage 3 forces review for truncated, saturated, missing, or malformed cove
   }
 });
 
+test('stage 3 evidence policy cannot promote a source-coverage review to bid', async () => {
+  const coverageVariants: unknown[] = [
+    { ...completeRequirementsCoverage(), source_insufficient: true },
+    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 200_001, extracted_char_count: 200_000 },
+    { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
+    undefined,
+    { source_truncated: false, requirement_limit_reached: false },
+  ];
+
+  for (const coverage of coverageVariants) {
+    const tender: Record<string, unknown> = {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      eligibility_requirements: [],
+    };
+    if (coverage !== undefined) tender.requirements_coverage = coverage;
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: tender }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+      ['attach-requirement-evidence', [{ json: {} }]],
+    ]);
+    const parsed = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(allCompliantEvaluation) }],
+      context,
+    );
+    assert.equal(parsed[0][0].json.recommendation_guard, 'source_coverage');
+    const applied = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+      parsed[0],
+      context,
+    );
+    assert.equal(applied[0][0].json.bid_recommendation, 'needs_review');
+  }
+
+  const completeContext: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements_coverage: completeRequirementsCoverage(),
+      eligibility_requirements: [],
+    } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ['attach-requirement-evidence', [{ json: {} }]],
+  ]);
+  const parsedComplete = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(allCompliantEvaluation) }],
+    completeContext,
+  );
+  assert.equal('recommendation_guard' in parsedComplete[0][0].json, false);
+  const appliedComplete = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+    parsedComplete[0],
+    completeContext,
+  );
+  assert.equal(appliedComplete[0][0].json.bid_recommendation, 'recommend_bid');
+
+  const stricter = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+    [{ json: {
+      ...parsedComplete[0][0].json,
+      recommendation_guard: 'source_coverage',
+      eligibility_requirements: [
+        { id: 'REQ-001', status: 'not_met', is_blocking: true },
+        { id: 'REQ-002', status: 'compliant', is_blocking: false },
+      ],
+    } }],
+    completeContext,
+  );
+  assert.equal(stricter[0][0].json.bid_recommendation, 'recommend_no_bid');
+});
+
 test('stage 3 derives recommendation policy before applying a coverage override', async () => {
   const context: ExecutionContext = new Map([
     ['load-requirements', [{ json: {
