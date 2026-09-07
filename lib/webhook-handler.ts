@@ -18,7 +18,12 @@ interface WebhookRunResult {
 type RunWebhook = (
   workflowId: string,
   payload: Record<string, unknown>,
-  options: { synchronous: true; correlationId?: string; retryRootExecutionId?: string },
+  options: {
+    synchronous: true;
+    timeoutMs?: number;
+    correlationId?: string;
+    retryRootExecutionId?: string;
+  },
 ) => Promise<WebhookRunResult>;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -93,6 +98,7 @@ export async function handleWebhookRequest(
     const correlationId = request.headers.get('x-correlation-id') ?? undefined;
     const result = await runWebhook(workflowId, payload, {
       synchronous: true,
+      ...(path === 'tender-details' ? { timeoutMs: 270_000 } : {}),
       ...(correlationId ? { correlationId } : {}),
       ...(retryRootExecutionId ? { retryRootExecutionId: retryRootExecutionId.toLowerCase() } : {}),
     });

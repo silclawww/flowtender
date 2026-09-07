@@ -24,6 +24,7 @@ interface WorkflowCodeNode {
     max_concurrency?: number;
     process_each_item?: boolean;
     select?: string;
+    timeout_ms?: number;
   };
   retry?: { max_attempts?: number };
 }
@@ -683,7 +684,7 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
       source_truncated: false,
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
-      source_char_limit: 200_000,
+      source_char_limit: 1_000_000,
       requirement_count: 2,
       requirement_limit: 25,
       requirement_limit_reached: false,
@@ -715,6 +716,23 @@ test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', a
   assert.ok((prepared.extraction_text as string).length > 140_000);
 });
 
+test('stage 2 keeps the complete 741,129-character large-package source', async () => {
+  const sourceText = 'x'.repeat(741_129);
+  const { prepared, parsed } = await parseStage2Requirements(sourceText, 2);
+
+  assert.equal((prepared.extraction_text as string).length, 741_129);
+  assert.deepEqual(parsed.requirements_coverage, {
+    source_insufficient: false,
+    source_truncated: false,
+    source_char_count: 741_129,
+    extracted_char_count: 741_129,
+    source_char_limit: 1_000_000,
+    requirement_count: 2,
+    requirement_limit: 25,
+    requirement_limit_reached: false,
+  });
+});
+
 test('stage 2 deterministically retains every selected Form 216 row', async () => {
   const checkboxState = [
     '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] Referenznachweise',
@@ -735,8 +753,10 @@ test('stage 2 deterministically retains every selected Form 216 row', async () =
 });
 
 test('stage 2 extraction contract separates deterministic Form 216 state from technical source', () => {
-  const body = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm').config.body ?? '';
+  const node = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm');
+  const body = node.config.body ?? '';
 
+  assert.equal(node.config.timeout_ms, 240_000);
   assert.match(body, /FORM 216.*außerhalb des Modells deterministisch verarbeitet/i);
   assert.match(body, /maximal 16 Anforderungen/i);
   assert.match(body, /einzigen Feld requirements/i);
@@ -812,8 +832,8 @@ test('stage 2 renders one bounded catalogue block without another model call', a
 });
 
 test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
-  const truncated = await parseStage2Requirements('x'.repeat(200_001), 1);
-  assert.equal((truncated.prepared.extraction_text as string).length, 200_000);
+  const truncated = await parseStage2Requirements('x'.repeat(1_000_001), 1);
+  assert.equal((truncated.prepared.extraction_text as string).length, 1_000_000);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
 
