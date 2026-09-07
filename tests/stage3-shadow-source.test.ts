@@ -85,7 +85,7 @@ test('shadow database source selects and scopes the three production-equivalent 
   ]);
 });
 
-test('same-org shadow preserves a prior blocker behind exact tender N/A evidence', async () => {
+test('same-org shadow applies exact tender N/A without bypassing recommendation guards', async () => {
   const calls: unknown[][] = [];
   const capture: { forwarded?: RunStage3ShadowOptions } = {};
   const previousBlocker = [{ id: 'REQ-001', status: 'not_met', is_blocking: true }];
@@ -195,13 +195,14 @@ test('same-org shadow preserves a prior blocker behind exact tender N/A evidence
     cert_expiry: null,
     updated_at: completion.updated_at,
   }]);
-  assert.equal(artifact.output.bid_recommendation, 'recommend_no_bid');
+  assert.equal(artifact.output.bid_recommendation, 'needs_review');
   assert.deepEqual(artifact.output.eligibility_requirements[0], {
     id: 'REQ-001',
-    status: 'not_met',
-    is_blocking: true,
+    status: 'compliant',
+    applicability: 'not_applicable',
+    is_blocking: false,
     profile_evidence: ['requirement_evidence'],
-    assessment_reason: 'Die vorige Bewertung bleibt bestehen; nicht zutreffend wurde nicht automatisch übernommen.',
+    assessment_reason: 'Vom Nutzer als nicht zutreffend bestätigt: Quellanforderung geprüft; nicht anwendbar.: evidence_id=55555555-5555-4555-8555-555555555555',
     requirement_evidence: ['55555555-5555-4555-8555-555555555555'],
   });
 });

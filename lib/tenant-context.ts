@@ -281,7 +281,7 @@ export function tenderRequirementEvidence(value: unknown): TenderRequirementEvid
       || seen.has(requirementId)
       || typeof status !== 'string'
       || !['pending', 'in_progress', 'verified', 'not_met', 'not_applicable'].includes(status)
-      || (status === 'not_applicable' && !parsed.note?.trim())) invalidPayload();
+      || (status !== 'pending' && !parsed.note?.trim())) invalidPayload();
     seen.add(requirementId);
     return {
       ...parsed,
@@ -412,7 +412,7 @@ export function preflightWorkflowPayload(
   const companyEvidence = operation === 'stage3'
     ? companyRequirementEvidence(companyEvidenceValue) : undefined;
   const tenderEvidence = operation === 'stage3'
-    ? tenderRequirementEvidence(tenderEvidenceValue)?.filter(item => item.status === 'not_applicable') : undefined;
+    ? tenderRequirementEvidence(tenderEvidenceValue)?.filter(item => item.status !== 'pending') : undefined;
   const trustedContext: TrustedAdmissionContext = {
     tender_id: canonicalUuid(dataProperty(root, 'tender_id'), wrapped ? dataProperty(wrapped, 'tender_id') : undefined),
     org_id: canonicalUuid(dataProperty(root, 'org_id'), wrapped ? dataProperty(wrapped, 'org_id') : undefined),

@@ -122,7 +122,7 @@ test('certificate sanitization rejects unknown keys and malformed optional value
   }
 });
 
-test('expired exact certificate stays review-only and exact tender N/A keeps prior source decision', async () => {
+test('expired exact certificate stays review-only and exact tender N/A clears its source decision', async () => {
   const exactNa = {
     evidence_id: 'na-certificate', title: 'Unbestimmtes Zertifikat', category: 'Zertifizierung', status: 'not_applicable',
     note: 'Nach Quellprüfung nicht anwendbar', cert_reference: null, cert_expiry: null,
@@ -144,7 +144,8 @@ test('expired exact certificate stays review-only and exact tender N/A keeps pri
   const byId = new Map((result.eligibility_requirements as Array<Record<string, unknown>>).map((item) => [item.id, item]));
   assert.equal(byId.get('REQ-CERT')?.status, 'needs_review');
   assert.match(String(byId.get('REQ-CERT')?.assessment_reason), /abgelaufen/i);
-  assert.equal(byId.get('REQ-CERT-NO-ID')?.status, 'not_met');
+  assert.equal(byId.get('REQ-CERT-NO-ID')?.status, 'compliant');
+  assert.equal(byId.get('REQ-CERT-NO-ID')?.applicability, 'not_applicable');
   assert.equal(attached.evidence_cutoff_at, '2026-09-05T09:00:00.000Z');
 });
 

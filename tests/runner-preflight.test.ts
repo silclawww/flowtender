@@ -295,12 +295,12 @@ test('Stage 3 carries only validated evidence for an explicit re-evaluation', ()
     payload: {
       tender_id: tenderId,
       org_id: orgId,
-      tender_requirement_evidence: [],
+      tender_requirement_evidence: tenderEvidence,
     },
   });
 });
 
-test('normal Stage 3 validates but drops legacy company and non-N/A tender evidence', () => {
+test('normal Stage 3 validates and drops legacy company evidence', () => {
   const companyEvidence = [{
     evidence_id: 'insurance', title: 'Betriebshaftpflicht', category: 'Versicherung',
     status: 'not_met', note: 'Deckung nicht ausreichend', cert_reference: null,

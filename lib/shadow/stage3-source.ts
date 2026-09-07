@@ -95,7 +95,7 @@ function exactTenderEvidence(
     if (!requirementId) return [];
     return [{ ...completionFields(row), requirement_id: requirementId }];
   });
-  return (tenderRequirementEvidence(shaped) ?? []).filter(item => item.status === 'not_applicable');
+  return (tenderRequirementEvidence(shaped) ?? []).filter(item => item.status !== 'pending');
 }
 
 export async function runStage3ShadowFromSource(

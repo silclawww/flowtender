@@ -162,7 +162,7 @@ test('legacy company rows never automatically strengthen a model judgment', asyn
   assert.equal('requirement_evidence' in (result.eligibility_requirements as Array<Record<string, unknown>>)[0], false);
 });
 
-test('historical exact non-N/A evidence cannot override a requirement', async () => {
+test('exact user not-met confirmation updates the requirement and blocker', async () => {
   const prepared = await attach([
     { ...common, evidence_id: 'company-register', title: 'Handelsregistereintrag', status: 'verified', updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true },
   ], [{
@@ -179,12 +179,14 @@ test('historical exact non-N/A evidence cannot override a requirement', async ()
       id: 'REQ-001', status: 'needs_review', is_blocking: false, profile_evidence: [],
     }],
   }, context);
-  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].requirement_evidence, undefined);
-  assert.equal((result.eligibility_requirements as Array<Record<string, unknown>>)[0].status, 'needs_review');
-  assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 0);
+  const requirement = (result.eligibility_requirements as Array<Record<string, unknown>>)[0];
+  assert.deepEqual(requirement.requirement_evidence, ['exact-register']);
+  assert.equal(requirement.status, 'not_met');
+  assert.equal(requirement.is_blocking, true);
+  assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 1);
 });
 
-test('historical exact verified evidence cannot promote stale model output', async () => {
+test('exact user fulfilled confirmation updates a stale model result', async () => {
   const prepared = await attach([], [{
     ...common, evidence_id: 'exact-register', title: 'Registerprüfung', requirement_id: 'REQ-001',
     status: 'verified', note: 'Aktueller Auszug geprüft', updated_at: '2026-08-05T20:02:00.000Z',
@@ -201,11 +203,11 @@ test('historical exact verified evidence cannot promote stale model output', asy
     }],
   }, context);
   const requirement = (result.eligibility_requirements as Array<Record<string, unknown>>)[0];
-  assert.equal(requirement.status, 'needs_review');
-  assert.equal(requirement.requirement_evidence, undefined);
+  assert.equal(requirement.status, 'compliant');
+  assert.deepEqual(requirement.requirement_evidence, ['exact-register']);
 });
 
-test('not-applicable cannot clear a previous blocker and historical pending evidence is ignored', async () => {
+test('exact not-applicable confirmation clears only its requirement while pending evidence is ignored', async () => {
   const prepared = await attach([], [
     { ...common, evidence_id: 'exact-register', title: 'Registerprüfung', requirement_id: 'REQ-001', status: 'not_applicable', note: 'Nach Prüfung nicht anwendbar', updated_at: '2026-08-05T20:02:00.000Z' },
     { ...common, evidence_id: 'exact-insurance', title: 'Versicherung', requirement_id: 'REQ-002', status: 'pending', updated_at: '2026-08-05T20:03:00.000Z' },
@@ -227,12 +229,14 @@ test('not-applicable cannot clear a previous blocker and historical pending evid
     ],
   }, context);
   const [register, insurance] = result.eligibility_requirements as Array<Record<string, unknown>>;
-  assert.equal(register.status, 'not_met');
-  assert.equal(register.is_blocking, true);
+  assert.equal(register.status, 'compliant');
+  assert.equal(register.applicability, 'not_applicable');
+  assert.equal(register.is_blocking, false);
   assert.deepEqual(register.profile_evidence, ['requirement_evidence']);
   assert.equal(insurance.status, 'compliant');
   assert.equal(insurance.is_blocking, false);
   assert.equal(insurance.requirement_evidence, undefined);
+  assert.equal((result.eligibility_summary as Record<string, unknown>).blocking_issues, 0);
 });
 
 test('the final saved summary identifies evaluation time and the maximum evidence snapshot', async () => {
