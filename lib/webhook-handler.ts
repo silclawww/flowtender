@@ -6,6 +6,7 @@ import {
   TenderStageTransitionError,
 } from './tender-failure-persistence.ts';
 import { IngressError, readJsonIngress } from './ingress.ts';
+import { workflowTimeoutOptions } from './workflow-timeout.ts';
 
 interface WebhookRunResult {
   execution_id: string;
@@ -98,7 +99,7 @@ export async function handleWebhookRequest(
     const correlationId = request.headers.get('x-correlation-id') ?? undefined;
     const result = await runWebhook(workflowId, payload, {
       synchronous: true,
-      ...(path === 'tender-details' ? { timeoutMs: 270_000 } : {}),
+      ...workflowTimeoutOptions(workflowId),
       ...(correlationId ? { correlationId } : {}),
       ...(retryRootExecutionId ? { retryRootExecutionId: retryRootExecutionId.toLowerCase() } : {}),
     });

@@ -32,6 +32,27 @@ test('production ingress default matches the outbound JSON contract', () => {
   assert.ok(FLOW_INGRESS_MAX_BYTES < 4_500_000);
 });
 
+test('the generic trigger entry point gives Stage 2 its extended workflow deadline', async () => {
+  let options: unknown;
+  const response = await handleTriggerRequest(
+    request('{}'),
+    'tender-stage2-requirements',
+    async (_workflowId, _payload, value) => {
+      options = value;
+      return successfulRun();
+    },
+    serviceKey,
+    'operator-secret-with-enough-entropy',
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(options, {
+    synchronous: true,
+    timeoutMs: 270_000,
+    correlationId: undefined,
+  });
+});
+
 test('declared oversized webhook and trigger requests fail before body parsing or workflow work', async () => {
   for (const invoke of [
     (incoming: Request, run: typeof successfulRun) => handleWebhookRequest(

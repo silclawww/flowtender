@@ -2,6 +2,7 @@ import { AdmissionControlError } from './admission-control.ts';
 import { isServiceAuthorized } from './auth.ts';
 import { IngressError, readJsonIngress } from './ingress.ts';
 import { isTelemetryPersistenceError } from './telemetry-persistence.ts';
+import { workflowTimeoutOptions } from './workflow-timeout.ts';
 
 interface TriggerRunResult {
   execution_id: string;
@@ -14,7 +15,7 @@ interface TriggerRunResult {
 type RunTrigger = (
   workflowId: string,
   payload: Record<string, unknown>,
-  options: { synchronous: true; correlationId?: string },
+  options: { synchronous: true; timeoutMs?: number; correlationId?: string },
 ) => Promise<TriggerRunResult>;
 
 const noStore = { 'Cache-Control': 'no-store' };
@@ -44,6 +45,7 @@ export async function handleTriggerRequest(
   try {
     const result = await runTrigger(workflowId, payload, {
       synchronous: true,
+      ...workflowTimeoutOptions(workflowId),
       correlationId: request.headers.get('x-correlation-id') ?? undefined,
     });
     if (result.status === 'error') {
