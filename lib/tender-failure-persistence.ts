@@ -57,6 +57,54 @@ interface FailureRpcClient {
   }>;
 }
 
+interface ReevaluationClaimQuery {
+  eq(column: string, value: unknown): ReevaluationClaimQuery;
+  select(columns: string): PromiseLike<{ data: unknown; error: unknown }>;
+}
+
+interface ReevaluationClaimClient {
+  from(name: string): {
+    update(values: Record<string, unknown>): ReevaluationClaimQuery;
+  };
+}
+
+export async function claimTenderEvidenceReevaluation(
+  client: ReevaluationClaimClient,
+  input: { tenderId: string; orgId: string; startedAt?: string },
+): Promise<void> {
+  try {
+    const result = await client.from('tenders').update({
+      processing_status: 'evaluating',
+      processing_stage: 'stage3',
+      processing_started_at: input.startedAt ?? new Date().toISOString(),
+      processing_error_code: null,
+      processing_error_at: null,
+      processing_correlation_id: null,
+    })
+      .eq('id', input.tenderId)
+      .eq('org_id', input.orgId)
+      .eq('processing_status', 'complete')
+      .select('id,processing_status');
+    if (result.error != null) throw new TenderStagePersistenceError();
+    if (Array.isArray(result.data) && result.data.length === 0) {
+      throw new TenderStageTransitionError();
+    }
+    const row = Array.isArray(result.data) && result.data.length === 1
+      ? result.data[0] : null;
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+      || Object.keys(row).sort().join(',') !== 'id,processing_status') {
+      throw new TenderStagePersistenceError();
+    }
+    const record = row as Record<string, unknown>;
+    if (record.id !== input.tenderId || record.processing_status !== 'evaluating') {
+      throw new TenderStagePersistenceError();
+    }
+  } catch (error) {
+    if (error instanceof TenderStageTransitionError || error instanceof TenderStagePersistenceError) throw error;
+    throw new TenderStagePersistenceError();
+  }
+}
+
 export async function claimTenderProcessingStage(
   client: FailureRpcClient,
   input: {

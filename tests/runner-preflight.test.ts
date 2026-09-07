@@ -3,7 +3,11 @@ import test from 'node:test';
 
 import { WorkflowRunner } from '../lib/runner/runner.ts';
 import {
+  CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS,
+  CERTIFICATE_CATALOGUE_PROMPT_PREFIX,
+  CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES,
   materializeWorkflowPayload,
+  measureCertificateCataloguePromptTokens,
   preflightWorkflowPayload,
 } from '../lib/tenant-context.ts';
 import { TelemetryPersistenceError } from '../lib/telemetry-persistence.ts';
@@ -122,6 +126,259 @@ test('valid direct and wrapped Stage 2/3 contexts become dual-ID-only workflow i
   }
 });
 
+const certificateCatalogue = {
+  version: '2026-08-27.2',
+  entries: [{
+    id: ' iso-9001 ',
+    code: ' ISO 9001 ',
+    name_de: ' Qualitätsmanagementsystem ',
+    name_en: ' Quality management system ',
+    aliases: [' ISO9001 ', 'DIN EN ISO 9001'],
+  }],
+};
+
+test('Stage 2 materializes only the exact normalized certificate catalogue projection', () => {
+  const materialized = materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      certificate_catalogue: certificateCatalogue,
+    }),
+  );
+
+  assert.deepEqual(materialized.payload, {
+    tender_id: tenderId,
+    org_id: orgId,
+    certificate_catalogue: {
+      version: '2026-08-27.2',
+      entries: [{
+        id: 'iso-9001',
+        code: 'ISO 9001',
+        name_de: 'Qualitätsmanagementsystem',
+        name_en: 'Quality management system',
+        aliases: ['ISO9001', 'DIN EN ISO 9001'],
+      }],
+    },
+  });
+  const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX
+    + JSON.stringify(materialized.payload.certificate_catalogue);
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+  assert.ok(measurement.estimatedTokens <= CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
+  assert.ok(measurement.safeUpperBoundTokens <= CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
+});
+
+test('Stage 2 accepts 60 valid catalogue entries and legacy payloads may omit the projection', () => {
+  const entries = Array.from({ length: 60 }, (_, index) => ({
+    id: `certificate-${index}`,
+    code: `CODE-${index}`,
+    name_de: `Zertifikat ${index}`,
+    name_en: `Certificate ${index}`,
+    aliases: [],
+  }));
+  const materialized = materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+      certificate_catalogue: { version: 'v1', entries },
+    }),
+  );
+  assert.equal((materialized.payload.certificate_catalogue as { entries: unknown[] }).entries.length, 60);
+  assert.deepEqual(materializeWorkflowPayload(
+    'tender-stage2-requirements',
+    preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    }),
+  ).payload, { tender_id: tenderId, org_id: orgId });
+});
+
+test('certificate catalogue sanitization rejects adversarial shapes, duplicate IDs and excess size', () => {
+  const entry = certificateCatalogue.entries[0];
+  const payload = (catalogue: unknown) => ({
+    tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    certificate_catalogue: catalogue,
+  });
+  const invalidCatalogues = [
+    { ...certificateCatalogue, injected: true },
+    { version: 'v1', entries: [{ ...entry, injected: true }] },
+    { version: 'v1', entries: [{ ...entry, aliases: 'ISO9001' }] },
+    { version: 'v1', entries: [{ ...entry, code: 'x'.repeat(41) }] },
+    { version: 'v1', entries: [entry, { ...entry, id: 'iso-9001' }] },
+    { version: 'v1', entries: Array.from({ length: 61 }, (_, index) => ({ ...entry, id: `id-${index}` })) },
+    {
+      version: 'v1',
+      entries: Array.from({ length: 60 }, (_, index) => ({
+        id: `id-${index}`,
+        code: 'c'.repeat(40),
+        name_de: 'd'.repeat(80),
+        name_en: 'e'.repeat(80),
+        aliases: Array.from({ length: 4 }, (_, alias) => `${alias}-${'a'.repeat(58)}`.slice(0, 60)),
+      })),
+    },
+  ];
+  for (const catalogue of invalidCatalogues) {
+    assert.throws(
+      () => preflightWorkflowPayload('tender-stage2-requirements', payload(catalogue)),
+      /INVALID_WORKFLOW_PAYLOAD/,
+    );
+  }
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage3-evaluation', payload(certificateCatalogue)),
+    /INVALID_WORKFLOW_PAYLOAD/,
+  );
+});
+
+test('catalogue growth below the byte ceiling still fails the estimated token budget', () => {
+  const entries = Array.from({ length: 40 }, (_, index) => ({
+    id: `id-${index}`,
+    code: `code-${index}`,
+    name_de: 'd'.repeat(80),
+    name_en: 'e'.repeat(80),
+    aliases: ['a'.repeat(60), 'b'.repeat(60)],
+  }));
+  const catalogue = { version: 'v1', entries };
+  const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX + JSON.stringify(catalogue);
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+
+  assert.ok(measurement.utf8Bytes < CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES);
+  assert.ok(measurement.estimatedTokens > CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
+  assert.throws(
+    () => preflightWorkflowPayload('tender-stage2-requirements', {
+      tender_id: tenderId,
+      org_id: orgId,
+      user_id: actorId,
+      admission_id: admissionId,
+      certificate_catalogue: catalogue,
+    }),
+    /INVALID_WORKFLOW_PAYLOAD/,
+  );
+});
+
+test('Stage 3 carries only validated evidence for an explicit re-evaluation', () => {
+  const companyEvidence = [{
+    evidence_id: 'profile-handelsregister',
+    title: 'Handelsregistereintrag',
+    category: 'Register',
+    status: 'verified',
+    note: 'Aktueller Auszug liegt vor',
+    cert_reference: 'HRB 123',
+    cert_expiry: null,
+    updated_at: '2026-08-05T19:00:00.000Z',
+    legacy_identity: true,
+  }];
+  const tenderEvidence = [{
+    evidence_id: 'exact-req-001',
+    title: 'Registerauszug',
+    category: 'Register',
+    requirement_id: 'REQ-001',
+    status: 'verified',
+    note: 'Freigabe liegt vor',
+    cert_reference: null,
+    cert_expiry: null,
+    updated_at: '2026-08-05T20:00:00.000Z',
+  }];
+  const preflight = preflightWorkflowPayload('tender-stage3-evaluation', {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+    company_requirement_evidence: companyEvidence,
+    tender_requirement_evidence: tenderEvidence,
+  });
+
+  assert.equal(preflight.trustedContext?.evaluation_reason, 'evidence_changes');
+  assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight), {
+    workflowId: 'tender-stage3-evaluation',
+    payload: {
+      tender_id: tenderId,
+      org_id: orgId,
+      tender_requirement_evidence: tenderEvidence,
+    },
+  });
+});
+
+test('normal Stage 3 validates and drops legacy company evidence', () => {
+  const companyEvidence = [{
+    evidence_id: 'insurance', title: 'Betriebshaftpflicht', category: 'Versicherung',
+    status: 'not_met', note: 'Deckung nicht ausreichend', cert_reference: null,
+    cert_expiry: null, updated_at: '2026-08-05T19:00:00.000Z', legacy_identity: true,
+  }];
+  const preflight = preflightWorkflowPayload('tender-stage3-evaluation', {
+    tender_id: tenderId, org_id: orgId, user_id: actorId, admission_id: admissionId,
+    company_requirement_evidence: companyEvidence,
+    tender_requirement_evidence: [],
+  });
+  assert.deepEqual(materializeWorkflowPayload('tender-stage3-evaluation', preflight).payload, {
+    tender_id: tenderId,
+    org_id: orgId,
+    tender_requirement_evidence: [],
+  });
+});
+
+test('Stage 3 rejects malformed evidence before admission or state mutation', () => {
+  const valid = {
+    tender_id: tenderId,
+    org_id: orgId,
+    user_id: actorId,
+    admission_id: admissionId,
+    evaluation_reason: 'evidence_changes',
+  };
+  for (const tender_requirement_evidence of [
+    [{ requirement_id: 'REQ-001', status: 'verified' }],
+    [{
+      evidence_id: 'exact-req-001',
+      title: 'Freigabe',
+      category: 'Sonstiges',
+      requirement_id: 'REQ-001',
+      status: 'customer-controlled',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    }],
+    Array.from({ length: 26 }, (_, index) => ({
+      evidence_id: `evidence-${index}`,
+      title: `Requirement ${index}`,
+      category: 'Sonstiges',
+      requirement_id: `REQ-${index}`,
+      status: 'verified',
+      note: null,
+      cert_reference: null,
+      cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z',
+    })),
+  ]) {
+    assert.throws(
+      () => preflightWorkflowPayload('tender-stage3-evaluation', {
+        ...valid,
+        tender_requirement_evidence,
+      }),
+      /INVALID_WORKFLOW_PAYLOAD/,
+    );
+  }
+
+  assert.throws(() => preflightWorkflowPayload('tender-stage3-evaluation', {
+    ...valid,
+    company_requirement_evidence: Array.from({ length: 51 }, (_, index) => ({
+      evidence_id: `company-${index}`, title: `Evidence ${index}`, category: 'Other',
+      status: 'pending', note: null, cert_reference: null, cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true,
+    })),
+  }), /INVALID_WORKFLOW_PAYLOAD/);
+
+  assert.throws(() => preflightWorkflowPayload('tender-stage3-evaluation', {
+    ...valid,
+    company_requirement_evidence: [{
+      evidence_id: 'company-1', title: 'Evidence', category: 'Other', status: 'verified',
+      note: null, cert_reference: null, cert_expiry: null,
+      updated_at: '2026-08-05T20:00:00.000Z', legacy_identity: true,
+      org_id: otherOrgId,
+    }],
+  }), /INVALID_WORKFLOW_PAYLOAD/);
+});
 test('Stage 1 keeps source data but recursively strips actor and lease fields', () => {
   for (const workflowId of ['tender-stage1-pdf', 'tender-stage1-gaeb']) {
     assert.deepEqual(materializeWorkflowPayload(workflowId, preflightWorkflowPayload(workflowId, {

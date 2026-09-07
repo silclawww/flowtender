@@ -17,6 +17,10 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export const WORKFLOW_PAYLOAD_MAX_DEPTH = 64;
 export const WORKFLOW_PAYLOAD_MAX_NODES = 250_000;
 export const WORKFLOW_PAYLOAD_MAX_BYTES = 75 * 1024 * 1024;
+export const CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES = 16 * 1024;
+export const CERTIFICATE_CATALOGUE_PROMPT_PREFIX =
+  'ZERTIFIKATSKATALOG (serverseitige Daten-Allowlist): \n';
+export const CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS = 2_400;
 
 export interface TrustedAdmissionContext {
   tender_id: string;
@@ -24,11 +28,37 @@ export interface TrustedAdmissionContext {
   user_id: string;
   admission_id: string;
   operation: AdmissionOperation;
+  evaluation_reason?: 'evidence_changes';
 }
+
+type EvidenceStatus = 'pending' | 'in_progress' | 'verified' | 'not_met';
+
+type EvidenceFields = {
+  evidence_id: string;
+  title: string;
+  category: string;
+  status: EvidenceStatus;
+  note: string | null;
+  cert_reference: string | null;
+  cert_expiry: string | null;
+  updated_at: string;
+};
+
+export type CompanyRequirementEvidence = EvidenceFields & {
+  legacy_identity: true;
+};
+
+export type TenderRequirementEvidence = Omit<EvidenceFields, 'status'> & {
+  requirement_id: string;
+  status: EvidenceStatus | 'not_applicable';
+};
 
 export interface WorkflowPayloadPreflight {
   source: Record<string, unknown>;
   trustedContext: TrustedAdmissionContext | null;
+  certificateCatalogue?: CertificateCatalogueProjection;
+  companyRequirementEvidence?: CompanyRequirementEvidence[];
+  tenderRequirementEvidence?: TenderRequirementEvidence[];
 }
 
 export interface MaterializedWorkflowPayload {
@@ -40,6 +70,23 @@ interface PayloadLimits {
   maxDepth?: number;
   maxNodes?: number;
   maxBytes?: number;
+}
+
+export interface CertificateCatalogueProjection {
+  version: string;
+  entries: Array<{
+    id: string;
+    code: string;
+    name_de: string;
+    name_en: string;
+    aliases: string[];
+  }>;
+}
+
+export interface CertificateCataloguePromptTokenMeasurement {
+  estimatedTokens: number;
+  safeUpperBoundTokens: number;
+  utf8Bytes: number;
 }
 
 export class WorkflowPayloadError extends Error {
@@ -83,6 +130,165 @@ function canonicalUuid(directValue: unknown, wrappedValue: unknown): string {
   const wrapped = optionalUuid(wrappedValue);
   if (direct && wrapped && direct !== wrapped) invalidTenantContext();
   return wrapped ?? direct ?? invalidTenantContext();
+}
+
+function evaluationReason(directValue: unknown, wrappedValue: unknown): 'evidence_changes' | undefined {
+  const direct = directValue === undefined ? undefined
+    : directValue === 'evidence_changes' ? directValue : invalidPayload();
+  const wrapped = wrappedValue === undefined ? undefined
+    : wrappedValue === 'evidence_changes' ? wrappedValue : invalidPayload();
+  if (direct && wrapped && direct !== wrapped) invalidPayload();
+  return wrapped ?? direct;
+}
+
+function nullableString(value: unknown, maxLength: number): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === 'string' && value.length <= maxLength ? value : undefined;
+}
+
+function requiredString(value: unknown, maxLength: number): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength
+    ? value : undefined;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+}
+
+function catalogueString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string' || value.length > maxLength) return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Deterministic measurement of the exact prompt block. No local Gemini
+ * tokenizer is available, so UTF-8/4 plus one per non-ASCII code point tracks
+ * expected cost while the byte count is a tokenizer-independent safe upper
+ * bound for arbitrary UTF-8 input.
+ */
+export function measureCertificateCataloguePromptTokens(
+  promptBlock: string,
+): CertificateCataloguePromptTokenMeasurement {
+  const bytes = utf8Bytes(promptBlock);
+  const nonAsciiCodePoints = [...promptBlock]
+    .filter((character) => (character.codePointAt(0) ?? 0) > 0x7f)
+    .length;
+  return {
+    estimatedTokens: Math.ceil(bytes / 4) + nonAsciiCodePoints,
+    safeUpperBoundTokens: bytes,
+    utf8Bytes: bytes,
+  };
+}
+
+function assertCertificateCataloguePromptBudget(promptBlock: string): void {
+  const measurement = measureCertificateCataloguePromptTokens(promptBlock);
+  if (measurement.estimatedTokens > CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS
+    || measurement.safeUpperBoundTokens > CERTIFICATE_CATALOGUE_PROJECTION_MAX_BYTES) invalidPayload();
+}
+
+export function certificateCatalogueProjection(value: unknown): CertificateCatalogueProjection | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value) || !exactKeys(value, ['version', 'entries'])) invalidPayload();
+  const version = catalogueString(dataProperty(value, 'version'), 32);
+  const rawEntries = dataProperty(value, 'entries');
+  if (!version || !Array.isArray(rawEntries) || rawEntries.length > 60) invalidPayload();
+  const seen = new Set<string>();
+  const entries = rawEntries.map((raw) => {
+    if (!isPlainObject(raw)
+      || !exactKeys(raw, ['id', 'code', 'name_de', 'name_en', 'aliases'])) invalidPayload();
+    const id = catalogueString(dataProperty(raw, 'id'), 64);
+    const code = catalogueString(dataProperty(raw, 'code'), 40);
+    const nameDe = catalogueString(dataProperty(raw, 'name_de'), 80);
+    const nameEn = catalogueString(dataProperty(raw, 'name_en'), 80);
+    const rawAliases = dataProperty(raw, 'aliases');
+    if (!id || !code || !nameDe || !nameEn || seen.has(id)
+      || !Array.isArray(rawAliases) || rawAliases.length > 4) invalidPayload();
+    const aliases = [...new Set(rawAliases.map((alias) => catalogueString(alias, 60)))];
+    if (aliases.some((alias) => alias === undefined)) invalidPayload();
+    seen.add(id);
+    return { id, code, name_de: nameDe, name_en: nameEn, aliases: aliases as string[] };
+  });
+  const projection = { version, entries };
+  assertCertificateCataloguePromptBudget(
+    CERTIFICATE_CATALOGUE_PROMPT_PREFIX + JSON.stringify(projection),
+  );
+  return projection;
+}
+
+function evidenceFields(
+  raw: Record<string, unknown>,
+  statusOverride?: EvidenceStatus,
+): EvidenceFields | undefined {
+  const evidenceId = requiredString(dataProperty(raw, 'evidence_id'), 100);
+  const title = requiredString(dataProperty(raw, 'title'), 500);
+  const category = requiredString(dataProperty(raw, 'category'), 200);
+  const status = statusOverride ?? dataProperty(raw, 'status');
+  const note = nullableString(dataProperty(raw, 'note'), 2000);
+  const certReference = nullableString(dataProperty(raw, 'cert_reference'), 500);
+  const certExpiry = nullableString(dataProperty(raw, 'cert_expiry'), 10);
+  const updatedAt = dataProperty(raw, 'updated_at');
+  if (!evidenceId || !title || !category
+    || typeof status !== 'string'
+    || !['pending', 'in_progress', 'verified', 'not_met'].includes(status)
+    || note === undefined || certReference === undefined || certExpiry === undefined
+    || typeof updatedAt !== 'string' || updatedAt.length > 40
+    || !Number.isFinite(Date.parse(updatedAt))) return undefined;
+  return {
+    evidence_id: evidenceId,
+    title,
+    category,
+    status: status as EvidenceStatus,
+    note,
+    cert_reference: certReference,
+    cert_expiry: certExpiry,
+    updated_at: updatedAt,
+  };
+}
+
+export function companyRequirementEvidence(value: unknown): CompanyRequirementEvidence[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 50) invalidPayload();
+  const seen = new Set<string>();
+  return value.map((raw) => {
+    if (!isPlainObject(raw)
+      || Object.keys(raw).sort().join(',')
+        !== 'category,cert_expiry,cert_reference,evidence_id,legacy_identity,note,status,title,updated_at') {
+      invalidPayload();
+    }
+    const parsed = evidenceFields(raw);
+    if (!parsed || dataProperty(raw, 'legacy_identity') !== true || seen.has(parsed.evidence_id)) invalidPayload();
+    seen.add(parsed.evidence_id);
+    return { ...parsed, legacy_identity: true };
+  });
+}
+
+export function tenderRequirementEvidence(value: unknown): TenderRequirementEvidence[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 25) invalidPayload();
+  const seen = new Set<string>();
+  return value.map((raw) => {
+    if (!isPlainObject(raw)
+      || Object.keys(raw).sort().join(',')
+        !== 'category,cert_expiry,cert_reference,evidence_id,note,requirement_id,status,title,updated_at') {
+      invalidPayload();
+    }
+    const requirementId = dataProperty(raw, 'requirement_id');
+    const status = dataProperty(raw, 'status');
+    const parsed = evidenceFields(raw, status === 'not_applicable' ? 'pending' : undefined);
+    if (!parsed || typeof requirementId !== 'string'
+      || requirementId.trim().length === 0 || requirementId.length > 100
+      || seen.has(requirementId)
+      || typeof status !== 'string'
+      || !['pending', 'in_progress', 'verified', 'not_met', 'not_applicable'].includes(status)
+      || (status !== 'pending' && !parsed.note?.trim())) invalidPayload();
+    seen.add(requirementId);
+    return {
+      ...parsed,
+      requirement_id: requirementId,
+      status: status as TenderRequirementEvidence['status'],
+    };
+  });
 }
 
 function utf8Bytes(value: string): number {
@@ -188,14 +394,40 @@ export function preflightWorkflowPayload(
 
   const bodyValue = dataProperty(root, 'body');
   const wrapped = bodyValue === undefined ? null : isPlainObject(bodyValue) ? bodyValue : invalidTenantContext();
+  const reason = evaluationReason(
+    dataProperty(root, 'evaluation_reason'),
+    wrapped ? dataProperty(wrapped, 'evaluation_reason') : undefined,
+  );
+  if (reason && operation !== 'stage3') invalidPayload();
+  const businessSource = wrapped ?? root;
+  const companyEvidenceValue = dataProperty(businessSource, 'company_requirement_evidence');
+  const tenderEvidenceValue = dataProperty(businessSource, 'tender_requirement_evidence');
+  const certificateCatalogueValue = dataProperty(businessSource, 'certificate_catalogue');
+  if ((companyEvidenceValue !== undefined || tenderEvidenceValue !== undefined) && operation !== 'stage3') {
+    invalidPayload();
+  }
+  if (certificateCatalogueValue !== undefined && operation !== 'stage2') invalidPayload();
+  const certificateCatalogue = operation === 'stage2'
+    ? certificateCatalogueProjection(certificateCatalogueValue) : undefined;
+  const companyEvidence = operation === 'stage3'
+    ? companyRequirementEvidence(companyEvidenceValue) : undefined;
+  const tenderEvidence = operation === 'stage3'
+    ? tenderRequirementEvidence(tenderEvidenceValue)?.filter(item => item.status !== 'pending') : undefined;
   const trustedContext: TrustedAdmissionContext = {
     tender_id: canonicalUuid(dataProperty(root, 'tender_id'), wrapped ? dataProperty(wrapped, 'tender_id') : undefined),
     org_id: canonicalUuid(dataProperty(root, 'org_id'), wrapped ? dataProperty(wrapped, 'org_id') : undefined),
     user_id: canonicalUuid(dataProperty(root, 'user_id'), wrapped ? dataProperty(wrapped, 'user_id') : undefined),
     admission_id: canonicalUuid(dataProperty(root, 'admission_id'), wrapped ? dataProperty(wrapped, 'admission_id') : undefined),
     operation,
+    ...(reason ? { evaluation_reason: reason } : {}),
   };
-  return { source: wrapped ?? root, trustedContext };
+  return {
+    source: businessSource,
+    trustedContext,
+    certificateCatalogue,
+    companyRequirementEvidence: companyEvidence,
+    tenderRequirementEvidence: tenderEvidence,
+  };
 }
 
 export function materializeWorkflowPayload(
@@ -212,7 +444,14 @@ export function materializeWorkflowPayload(
   if (context.operation !== 'upload') {
     return {
       workflowId,
-      payload: { tender_id: context.tender_id, org_id: context.org_id },
+      payload: {
+        tender_id: context.tender_id,
+        org_id: context.org_id,
+        ...(context.operation === 'stage2' && preflight.certificateCatalogue
+          ? { certificate_catalogue: preflight.certificateCatalogue } : {}),
+        ...(context.operation === 'stage3' && preflight.tenderRequirementEvidence
+          ? { tender_requirement_evidence: preflight.tenderRequirementEvidence } : {}),
+      },
     };
   }
 
