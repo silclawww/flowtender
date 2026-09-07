@@ -11,6 +11,7 @@ import {
   TenderStagePersistenceError,
   TenderStageTransitionError,
 } from './tender-failure-persistence.ts';
+import { workflowTimeoutOptions } from './workflow-timeout.ts';
 
 interface QueryResult<T> {
   data: T | null;
@@ -34,7 +35,12 @@ export interface RetryDependencies {
   runWorkflow(
     workflowId: string,
     payload: Record<string, unknown>,
-    options: { synchronous: true; correlationId?: string; retryRootExecutionId?: string },
+    options: {
+      synchronous: true;
+      timeoutMs?: number;
+      correlationId?: string;
+      retryRootExecutionId?: string;
+    },
   ): Promise<RetryRunResult>;
   acquireAdmission(input: {
     actorUserId: string;
@@ -139,6 +145,7 @@ export async function handleRetryExecution(
       { ...retry.triggerPayload, admission_id: leaseId },
       {
         synchronous: true,
+        ...workflowTimeoutOptions(retry.workflowId),
         correlationId: retry.correlationId,
         retryRootExecutionId: retry.retryRootExecutionId,
       },

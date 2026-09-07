@@ -97,6 +97,7 @@ test('retry sender transfers one immutable lease to the receiver without releasi
     runWorkflow: async (_workflowId, payload, options) => {
       calledPayload = payload;
       assert.equal(options.retryRootExecutionId, rootExecutionId);
+      assert.equal(options.timeoutMs, 270_000);
       return {
         execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
         status: 'done',
