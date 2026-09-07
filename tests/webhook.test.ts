@@ -65,12 +65,14 @@ test('operator credentials cannot cross into the webhook boundary', async () => 
 test('the dedicated service credential reaches the expected processing workflow', async () => {
   let calledWorkflow: string | undefined;
   let calledPayload: Record<string, unknown> | undefined;
+  let calledOptions: unknown;
   const response = await handleWebhookRequest(
     webhookRequest(SERVICE_KEY),
     'tender-details',
-    async (workflowId, payload) => {
+    async (workflowId, payload, options) => {
       calledWorkflow = workflowId;
       calledPayload = payload;
+      calledOptions = options;
       return {
         execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
         status: 'done',
@@ -90,11 +92,13 @@ test('the dedicated service credential reaches the expected processing workflow'
     user_id: USER_ID,
     admission_id: ADMISSION_ID,
   });
+  assert.deepEqual(calledOptions, { synchronous: true, timeoutMs: 270_000 });
   assert.deepEqual(await response.json(), { processing_status: 'details_ready' });
 });
 
 test('Stage 1 format selection is deferred to the post-claim runner boundary', async () => {
   let calledWorkflow: string | undefined;
+  let calledOptions: unknown;
   const request = new Request('https://flowtender.example/api/flow/webhook/tender-metadata', {
     method: 'POST',
     headers: {
@@ -113,8 +117,9 @@ test('Stage 1 format selection is deferred to the post-claim runner boundary', a
   const response = await handleWebhookRequest(
     request,
     'tender-metadata',
-    async (workflowId) => {
+    async (workflowId, _payload, options) => {
       calledWorkflow = workflowId;
+      calledOptions = options;
       return {
         execution_id: '6ca5d12d-4309-4a0e-b968-9cb7535c8fcb',
         status: 'done',
@@ -127,6 +132,7 @@ test('Stage 1 format selection is deferred to the post-claim runner boundary', a
 
   assert.equal(response.status, 200);
   assert.equal(calledWorkflow, 'tender-stage1');
+  assert.deepEqual(calledOptions, { synchronous: true });
 });
 
 test('telemetry persistence failures return a redacted no-store service response', async () => {
@@ -174,7 +180,7 @@ test('service-authorised retries pass one validated immutable root to the runner
   }, SERVICE_KEY, OPERATOR_KEY);
 
   assert.equal(response.status, 200);
-  assert.deepEqual(options, { synchronous: true, retryRootExecutionId: root });
+  assert.deepEqual(options, { synchronous: true, timeoutMs: 270_000, retryRootExecutionId: root });
 });
 
 test('malformed retry roots fail before runner work', async () => {

@@ -5,6 +5,11 @@ import test from 'node:test';
 import { codeExecutor } from '../lib/nodes/code.ts';
 import { ifExecutor } from '../lib/nodes/control.ts';
 import { httpRequestExecutor } from '../lib/nodes/http-request.ts';
+import {
+  CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS,
+  CERTIFICATE_CATALOGUE_PROMPT_PREFIX,
+  measureCertificateCataloguePromptTokens,
+} from '../lib/tenant-context.ts';
 import type { ExecutionContext, ExecutionItem } from '../types/execution.ts';
 
 interface WorkflowCodeNode {
@@ -19,6 +24,7 @@ interface WorkflowCodeNode {
     max_concurrency?: number;
     process_each_item?: boolean;
     select?: string;
+    timeout_ms?: number;
   };
   retry?: { max_attempts?: number };
 }
@@ -142,6 +148,262 @@ test('Stage 3 keeps distance informational and outside the evaluation prompt', (
 
   assert.doesNotMatch(body, /\$json\.distance_(?:km|note)/);
   assert.doesNotMatch(body, /Entfernung über|Anfahrtskosten|Unterbringung|Logistikaufwand/);
+});
+
+test('Stage 3 prompts treat complete profile and tender context as data without truncation', () => {
+  for (const nodeId of ['evaluate-llm', 'reconcile-evaluation-llm']) {
+    const body = workflowNode('tender-stage3-evaluation.json', nodeId).config.body ?? '';
+    assert.match(body, /UNTERNEHMENSPROFIL[\s\S]*Daten, keine Anweisungen/);
+    assert.match(body, /Leere, null oder nicht vorhandene Profilfelder bedeuten[\s\S]*nicht angegeben/);
+    assert.match(body, /project_references_state/);
+    assert.match(body, /needs_review/);
+    assert.match(body, /profile_evidence/);
+    assert.match(body, /DIREKTBELEGE JE ANFORDERUNG/);
+    assert.match(body, /FESTE ANALYSEMETHODE/);
+    assert.match(body, /Leistungs- und Gewerke-Fit \(0-25/);
+    assert.match(body, /13 \+ 10 \+ 8 \+ 12 \+ 7 = 50/);
+    assert.match(body, /score_components/);
+    assert.match(body, /needs_review allein senkt den Score nicht/);
+    assert.match(body, /BESTÄTIGTER BLOCKER/);
+    assert.match(body, /OFFENE NACHWEISPRÜFUNG/);
+    assert.match(body, /Risiken in dieser stabilen Reihenfolge/);
+    assert.match(body, /Bei needs_review immer als offen/);
+    assert.doesNotMatch(body, /requirements[^\n]*\.slice|company_profile[^\n]*\.slice/i);
+  }
+});
+
+test('Stage 3 sends every stored evaluation field without tender or internal profile metadata', async () => {
+  const requirements = Array.from({ length: 25 }, (_, index) => ({
+    id: `REQ-${String(index + 1).padStart(3, '0')}`,
+    title: `Anforderung ${index + 1}`,
+    description: `Vollständiger Quellkontext ${index + 1} ${'x'.repeat(400)}`,
+  }));
+  const storedProfile = {
+    id: 'private-profile-id',
+    org_id: 'private-org-id',
+    user_id: 'private-user-id',
+    name: 'Beispiel Tiefbau GmbH',
+    founded_year: 1901,
+    team_size: 95,
+    annual_turnover_eur: 14_000_000,
+    trades: ['Tiefbau', 'Wasserbau'],
+    regions: ['Nordrhein-Westfalen'],
+    service_types: ['Öffentliche Auftraggeber'],
+    certifications: ['ISO 9001'],
+    project_size_min_eur: 50_000,
+    project_size_max_eur: 1_000_000,
+    trade_capacities: [{
+      trade: 'Tiefbau',
+      headcount: 24,
+      availableWeeksPerYear: 40,
+      currentUtilisationPct: 65,
+    }],
+    insurances: {
+      public_liability: { amount: 5_000_000, currency: 'EUR' },
+    },
+    policies: {
+      gdpr_compliant: true,
+      sustainability_policy: false,
+    },
+    project_references: [{
+      client: 'Stadt Beispiel',
+      project: 'Kanalbau Nord',
+      year: 2025,
+      value_eur: 800_000,
+      description: 'Kanal- und Straßenbau',
+    }],
+    project_references_state: 'not_provided',
+    hq_street: 'Musterstraße 1',
+    hq_postal_code: '45127',
+    hq_city: 'Essen',
+    onboarding_complete: true,
+    onboarding_step: 4,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-08-25T00:00:00.000Z',
+  };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements,
+      region: 'München',
+      value_breakdown: null,
+    } }]],
+    ['load-company-profile', [{ json: storedProfile }]],
+  ]);
+
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    context,
+  );
+  const output = result[0][0].json;
+
+  assert.deepEqual(output.company_profile, {
+    name: 'Beispiel Tiefbau GmbH',
+    founded_year: 1901,
+    team_size: 95,
+    annual_turnover_eur: 14_000_000,
+    trades: ['Tiefbau', 'Wasserbau'],
+    regions: ['Nordrhein-Westfalen'],
+    service_types: ['Öffentliche Auftraggeber'],
+    certifications: ['ISO 9001'],
+    project_size_min_eur: 50_000,
+    project_size_max_eur: 1_000_000,
+    trade_capacities: [{
+      trade: 'Tiefbau',
+      headcount: 24,
+      availableWeeksPerYear: 40,
+      currentUtilisationPct: 65,
+    }],
+    insurances: {
+      public_liability: { amount: 5_000_000, currency: 'EUR' },
+    },
+    policies: {
+      gdpr_compliant: true,
+      sustainability_policy: false,
+    },
+    project_references: [{
+      client: 'Stadt Beispiel',
+      project: 'Kanalbau Nord',
+      year: 2025,
+      value_eur: 800_000,
+      description: 'Kanal- und Straßenbau',
+    }],
+    project_references_state: 'provided',
+    hq_street: 'Musterstraße 1',
+    hq_postal_code: '45127',
+    hq_city: 'Essen',
+  });
+  assert.deepEqual(output.requirements, requirements);
+  assert.equal(output.requirements_json, JSON.stringify(requirements));
+  assert.equal(JSON.stringify(output).includes('private-profile-id'), false);
+  assert.equal(JSON.stringify(output).includes('private-org-id'), false);
+  assert.equal(JSON.stringify(output).includes('private-user-id'), false);
+  assert.equal('capabilities_summary' in (output.company_profile as Record<string, unknown>), false);
+  assert.deepEqual(output.profile_evidence_contract, {
+    version: 1,
+    available_fields: Object.keys(output.company_profile as Record<string, unknown>),
+  });
+  assert.deepEqual(output.score_methodology, {
+    version: 1,
+    component_maxima: {
+      trade_scope_fit: 25,
+      capacity_project_size_fit: 20,
+      region_delivery_model_fit: 15,
+      references_qualifications_fit: 25,
+      execution_value_creation_fit: 15,
+    },
+    neutral_components: {
+      trade_scope_fit: 13,
+      capacity_project_size_fit: 10,
+      region_delivery_model_fit: 8,
+      references_qualifications_fit: 12,
+      execution_value_creation_fit: 7,
+    },
+  });
+});
+
+test('Stage 3 limits direct evidence to requirement-matching profile values', async () => {
+  const requirements = [
+    { id: 'REQ-CERT', category: 'Zertifizierung', title: 'ISO 9001' },
+    { id: 'REQ-OTHER-CERT', category: 'Zertifizierung', title: 'ZTV Asphalt' },
+    { id: 'REQ-EQUIP', category: 'Ausrüstung', title: 'Asphaltbeschicker' },
+    { id: 'REQ-FORM', category: 'Sonstiges', title: 'Angebotsschreiben' },
+    { id: 'REQ-WORKFORCE', category: 'Personal', title: 'Arbeitskräfte der letzten 3 Jahre' },
+    { id: 'REQ-TURNOVER', category: 'Finanziell', title: 'Jahresumsatz mindestens 1 Mio. EUR' },
+    { id: 'REQ-TARIFF', category: 'Tariflich', title: 'Einhaltung des Mindestlohns' },
+  ];
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    new Map([
+      ['load-requirements', [{ json: { id: 'tender-id', requirements } }]],
+      ['load-company-profile', [{ json: {
+        team_size: 20,
+        annual_turnover_eur: 2_000_000,
+        certifications: ['ISO 9001'],
+        trade_capacities: [{ trade: 'Straßenbau', headcount: 20 }],
+        policies: { pays_living_wage: true },
+        trades: ['Straßenbau'],
+        service_types: ['Generalunternehmer'],
+      } }]],
+    ]),
+  );
+
+  assert.deepEqual(result[0][0].json.requirement_evidence_fields, {
+    'REQ-CERT': ['certifications'],
+    'REQ-OTHER-CERT': [],
+    'REQ-EQUIP': [],
+    'REQ-FORM': [],
+    'REQ-WORKFORCE': ['team_size', 'trade_capacities'],
+    'REQ-TURNOVER': ['annual_turnover_eur'],
+    'REQ-TARIFF': ['policies'],
+  });
+  assert.deepEqual(result[0][0].json.requirement_evidence_policy, {
+    'REQ-CERT': {
+      allowed_fields: ['certifications'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
+    'REQ-OTHER-CERT': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-EQUIP': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-FORM': { allowed_fields: [], allowed_statuses: ['needs_review'] },
+    'REQ-WORKFORCE': {
+      allowed_fields: ['team_size', 'trade_capacities'],
+      allowed_statuses: ['needs_review'],
+    },
+    'REQ-TURNOVER': {
+      allowed_fields: ['annual_turnover_eur'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
+    'REQ-TARIFF': {
+      allowed_fields: ['policies'],
+      allowed_statuses: ['compliant', 'partial', 'needs_review'],
+    },
+  });
+});
+
+test('Stage 3 distinguishes unknown, absent and provided reference evidence', async () => {
+  type PreparedReferenceContext = {
+    company_profile: { project_references_state: string };
+    reference_evidence_unknown_ids: string[];
+    reference_evidence_absent_ids: string[];
+  };
+  const requirements = [
+    { id: 'REQ-001', title: 'Referenzobjekte der letzten fünf Jahre', description: '' },
+    { id: 'REQ-002', title: 'ISO 9001', description: '' },
+  ];
+  const run = async (profile: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'prepare-context') },
+    [{ json: {} }],
+    new Map([
+      ['load-requirements', [{ json: { id: 'tender-id', requirements, region: 'München' } }]],
+      ['load-company-profile', [{ json: profile }]],
+    ]),
+  );
+
+  const unknown = (await run({
+    project_references: [],
+    project_references_state: 'not_provided',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(unknown.company_profile.project_references_state, 'not_provided');
+  assert.deepEqual(unknown.reference_evidence_unknown_ids, ['REQ-001']);
+  assert.deepEqual(unknown.reference_evidence_absent_ids, []);
+
+  const absent = (await run({
+    project_references: [],
+    project_references_state: 'explicitly_absent',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(absent.company_profile.project_references_state, 'explicitly_absent');
+  assert.deepEqual(absent.reference_evidence_unknown_ids, []);
+  assert.deepEqual(absent.reference_evidence_absent_ids, ['REQ-001']);
+
+  const provided = (await run({
+    project_references: [{ client: 'Stadt A', project: 'Kanalbau A' }],
+    project_references_state: 'not_provided',
+  }))[0][0].json as PreparedReferenceContext;
+  assert.equal(provided.company_profile.project_references_state, 'provided');
+  assert.deepEqual(provided.reference_evidence_unknown_ids, []);
+  assert.deepEqual(provided.reference_evidence_absent_ids, []);
 });
 
 const validPdfMetadata = {
@@ -365,6 +627,17 @@ const validRequirement = {
   source_fragments: ['Nachweis eines gültigen Qualitätsmanagementsystems nach ISO 9001.'],
 };
 
+const certificateCatalogueProjection = {
+  version: '2026-08-27.2',
+  entries: [{
+    id: 'iso-9001',
+    code: 'ISO 9001',
+    name_de: 'Qualitätsmanagementsystem',
+    name_en: 'Quality management system',
+    aliases: ['ISO9001', 'DIN EN ISO 9001'],
+  }],
+};
+
 const completeRequirementsCoverage = (requirementCount = 2) => ({
   source_insufficient: false,
   source_truncated: false,
@@ -411,7 +684,7 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
       source_truncated: false,
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
-      source_char_limit: 200_000,
+      source_char_limit: 1_000_000,
       requirement_count: 2,
       requirement_limit: 25,
       requirement_limit_reached: false,
@@ -443,6 +716,23 @@ test('stage 2 prioritizes checkbox truth and keeps the complete pilot source', a
   assert.ok((prepared.extraction_text as string).length > 140_000);
 });
 
+test('stage 2 keeps the complete 741,129-character large-package source', async () => {
+  const sourceText = 'x'.repeat(741_129);
+  const { prepared, parsed } = await parseStage2Requirements(sourceText, 2);
+
+  assert.equal((prepared.extraction_text as string).length, 741_129);
+  assert.deepEqual(parsed.requirements_coverage, {
+    source_insufficient: false,
+    source_truncated: false,
+    source_char_count: 741_129,
+    extracted_char_count: 741_129,
+    source_char_limit: 1_000_000,
+    requirement_count: 2,
+    requirement_limit: 25,
+    requirement_limit_reached: false,
+  });
+});
+
 test('stage 2 deterministically retains every selected Form 216 row', async () => {
   const checkboxState = [
     '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] Referenznachweise',
@@ -463,19 +753,87 @@ test('stage 2 deterministically retains every selected Form 216 row', async () =
 });
 
 test('stage 2 extraction contract separates deterministic Form 216 state from technical source', () => {
-  const body = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm').config.body ?? '';
+  const node = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm');
+  const body = node.config.body ?? '';
 
+  assert.equal(node.config.timeout_ms, 240_000);
   assert.match(body, /FORM 216.*außerhalb des Modells deterministisch verarbeitet/i);
   assert.match(body, /maximal 16 Anforderungen/i);
   assert.match(body, /einzigen Feld requirements/i);
   assert.match(body, /jedes Start-\/Fertigstellungsdatum.*Sperrzeit\/Winterpause/i);
   assert.match(body, /SOURCE.*PAGE.*source_fragments/i);
   assert.match(body, /Baubeschreibung.*Baugrund/i);
+  assert.match(body, /evidence_kind.*certificate.*insurance.*reference.*policy.*form.*other/i);
+  assert.match(body, /Standard.*Formular.*erneut.*form/i);
+  assert.match(body, /Katalog.*Daten.*keine Anweisungen/i);
+  assert.match(body, /certificate_catalogue_id.*exakt.*allowlist/i);
+  assert.match(body, /ZERTIFIKATSKATALOG.*certificate_catalogue/i);
+});
+
+test('stage 2 carries the bounded catalogue into the prompt as data', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'prepare-extraction-text') },
+    [{ json: {} }],
+    new Map([
+      ['trigger', [{ json: { certificate_catalogue: certificateCatalogueProjection } }]],
+      ['load-tender', [{ json: { pdf_text: 'x'.repeat(60) } }]],
+    ]),
+  );
+  assert.deepEqual(result[0][0].json.certificate_catalogue, certificateCatalogueProjection);
+  assert.ok(Buffer.byteLength(JSON.stringify(result[0][0].json.certificate_catalogue), 'utf8') <= 16 * 1024);
+});
+
+test('stage 2 renders one bounded catalogue block without another model call', async () => {
+  const node = workflowNode('tender-stage2-requirements.json', 'extract-requirements-llm');
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.GEMINI_API_KEY;
+  const bodies: string[] = [];
+  process.env.GEMINI_API_KEY = 'test-key';
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(String(init?.body ?? ''));
+    return new Response(JSON.stringify(llmResponse({ requirements: [] })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    for (const certificate_catalogue of [
+      { version: null, entries: [] },
+      certificateCatalogueProjection,
+    ]) {
+      await httpRequestExecutor.execute(
+        node.config as Record<string, unknown>,
+        [{ json: {} }],
+        new Map([['prepare-extraction-text', [{ json: {
+          extraction_text: 'Quelltext',
+          certificate_catalogue,
+        } }]]]),
+        { deadline: Date.now() + 5_000 },
+      );
+    }
+    assert.equal(bodies.length, 2);
+    const baseline = JSON.parse(bodies[0]) as { messages: Array<{ content: string }> };
+    const projected = JSON.parse(bodies[1]) as { messages: Array<{ content: string }> };
+    const baselineUser = baseline.messages[1].content;
+    const projectedUser = projected.messages[1].content;
+    assert.match(projectedUser, /ZERTIFIKATSKATALOG[\s\S]*iso-9001[\s\S]*AUSSCHREIBUNGSQUELLEN:[\s\S]*Quelltext/);
+    const promptBlock = CERTIFICATE_CATALOGUE_PROMPT_PREFIX
+      + JSON.stringify(certificateCatalogueProjection);
+    assert.ok(projectedUser.startsWith(promptBlock));
+    assert.ok(measureCertificateCataloguePromptTokens(promptBlock).estimatedTokens
+      <= CERTIFICATE_CATALOGUE_PROMPT_MAX_ESTIMATED_TOKENS);
+    assert.ok(Buffer.byteLength(projectedUser, 'utf8') - Buffer.byteLength(baselineUser, 'utf8')
+      <= Buffer.byteLength(JSON.stringify(certificateCatalogueProjection), 'utf8'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalApiKey;
+  }
 });
 
 test('stage 2 distinguishes source truncation from the exact requirement output limit', async () => {
-  const truncated = await parseStage2Requirements('x'.repeat(200_001), 1);
-  assert.equal((truncated.prepared.extraction_text as string).length, 200_000);
+  const truncated = await parseStage2Requirements('x'.repeat(1_000_001), 1);
+  assert.equal((truncated.prepared.extraction_text as string).length, 1_000_000);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).source_truncated, true);
   assert.equal((truncated.parsed.requirements_coverage as Record<string, unknown>).requirement_limit_reached, false);
 
@@ -502,6 +860,100 @@ test('stage 2 rejects malformed requirement schemas', async () => {
       llmResponse(requirements),
     );
   }
+});
+
+test('stage 2 validates evidence routing against the supplied certificate allowlist', async () => {
+  const prepared = { json: {
+    requirements_coverage: completeRequirementsCoverage(1),
+    selected_checkbox_state: '',
+    certificate_catalogue: certificateCatalogueProjection,
+  } };
+  const parse = (requirement: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([requirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+
+  const certificate = await parse({
+    ...validRequirement,
+    evidence_kind: 'certificate',
+    certificate_catalogue_id: 'iso-9001',
+  });
+  assert.equal((certificate[0][0].json.requirements as Array<Record<string, unknown>>)[0].certificate_catalogue_id, 'iso-9001');
+
+  const certificateWithoutMatch = await parse({
+    ...validRequirement,
+    evidence_kind: 'certificate',
+  });
+  assert.equal((certificateWithoutMatch[0][0].json.requirements as Array<Record<string, unknown>>)[0].certificate_catalogue_id, null);
+
+  const form = await parse({
+    ...validRequirement,
+    title: 'Formblatt 124 erneut einreichen',
+    evidence_kind: 'form',
+    certificate_catalogue_id: null,
+  });
+  assert.equal((form[0][0].json.requirements as Array<Record<string, unknown>>)[0].evidence_kind, 'form');
+
+  for (const invalid of [
+    { ...validRequirement, evidence_kind: 'registration', certificate_catalogue_id: null },
+    { ...validRequirement, evidence_kind: 'certificate', certificate_catalogue_id: 'unknown-id' },
+    { ...validRequirement, evidence_kind: 'insurance', certificate_catalogue_id: 'iso-9001' },
+    { ...validRequirement, certificate_catalogue_id: null },
+  ]) {
+    await assertLlmResponseFailsSafely(
+      'tender-stage2-requirements.json',
+      'parse-requirements',
+      llmResponse([invalid]),
+      new Map([['prepare-extraction-text', [prepared]]]),
+    );
+  }
+});
+
+test('legacy requirements may omit evidence routing while new metadata survives summary persistence', async () => {
+  const prepared = { json: {
+    requirements_coverage: completeRequirementsCoverage(1),
+    selected_checkbox_state: '',
+    certificate_catalogue: certificateCatalogueProjection,
+  } };
+  const routedRequirement = {
+    ...validRequirement,
+    evidence_kind: 'certificate',
+    certificate_catalogue_id: 'iso-9001',
+  };
+  const parsed = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([routedRequirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+  const context: ExecutionContext = new Map([
+    ['parse-requirements', parsed[0]],
+    ['finalize-workload', [{ json: { value_breakdown: null } }]],
+  ]);
+  const summary = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-summary') },
+    [{ json: { choices: [{ message: { content: 'Kurzfassung' } }] } }],
+    context,
+  );
+  assert.deepEqual(summary[0][0].json.requirements, [routedRequirement]);
+
+  const legacy = await codeExecutor.execute(
+    { code: workflowCode('tender-stage2-requirements.json', 'parse-requirements') },
+    [{ json: llmResponse([validRequirement]) }],
+    new Map([['prepare-extraction-text', [prepared]]]),
+  );
+  assert.deepEqual(legacy[0][0].json.requirements, [validRequirement]);
+});
+
+test('deterministically reconciled Form 216 requirements route to form evidence', async () => {
+  const checkboxState = '[[SOURCE 216.pdf PAGE 1]] [ROW 001] [X] ISO 9001 Zertifikat vorlegen';
+  const { parsed } = await parseStage2Requirements({
+    pdf_texts_extracted: { '216_checkbox_state': checkboxState },
+  }, 1);
+  const formRequirement = (parsed.requirements as Array<Record<string, unknown>>)
+    .find(requirement => String(requirement.id).startsWith('REQ-F216-'));
+  assert.equal(formRequirement?.evidence_kind, 'form');
+  assert.equal(formRequirement?.certificate_catalogue_id, null);
 });
 
 test('stage 2 preserves a valid requirements response exactly', async () => {
@@ -1404,6 +1856,13 @@ test('stage 3 fails closed when the evaluation LLM returns invalid JSON', async 
 
 const validEvaluation = {
   strategic_fit_score: 82,
+  score_components: {
+    trade_scope_fit: 23,
+    capacity_project_size_fit: 17,
+    region_delivery_model_fit: 13,
+    references_qualifications_fit: 18,
+    execution_value_creation_fit: 11,
+  },
   bid_recommendation: 'recommend_bid',
   rationale: 'Das Profil erfüllt die wesentlichen Anforderungen. Die Referenzen sind einschlägig.',
   strengths: ['Gültige ISO-9001-Zertifizierung', 'Einschlägige Referenzprojekte'],
@@ -1468,6 +1927,308 @@ function stage3Context(): ExecutionContext {
   ]);
 }
 
+test('stage 3 requires the explicit score worksheet to match the headline score', async () => {
+  const candidate = {
+    ...validEvaluation,
+    score_components: {
+      ...validEvaluation.score_components,
+      trade_scope_fit: validEvaluation.score_components.trade_scope_fit - 1,
+    },
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    score_methodology: {
+      version: 1,
+      component_maxima: {
+        trade_scope_fit: 25,
+        capacity_project_size_fit: 20,
+        region_delivery_model_fit: 15,
+        references_qualifications_fit: 25,
+        execution_value_creation_fit: 15,
+      },
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.deepEqual(inspected[0][0].json.reconciliation_findings, [{
+      path: 'score_components',
+      problem: 'must_match_component_ranges_and_score',
+    }]);
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
+test('stage 3 applies the stored reference-evidence state deterministically', async () => {
+  const requirements = [
+    { id: 'REQ-001', title: 'Drei vergleichbare Referenzprojekte', is_critical: true },
+    { id: 'REQ-002', title: 'ISO 9001', is_critical: false },
+  ];
+  const evaluation = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'partial', is_blocking: true },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  const run = async (preparedContext: Record<string, unknown>) => codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(evaluation) }],
+    new Map([
+      ['load-requirements', [{ json: {
+        id: 'tender-id',
+        requirements,
+        requirements_coverage: completeRequirementsCoverage(2),
+      } }]],
+      ['prepare-context', [{ json: preparedContext }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]),
+  );
+
+  const unknown = (await run({
+    reference_evidence_unknown_ids: ['REQ-001'],
+    reference_evidence_absent_ids: [],
+  }))[0][0].json;
+  assert.equal(unknown.bid_recommendation, 'needs_review');
+  assert.deepEqual(unknown.eligibility_requirements, [
+    {
+      id: 'REQ-001',
+      status: 'needs_review',
+      is_blocking: false,
+      review_reason: 'Referenzprojekte wurden im Unternehmensprofil noch nicht hinterlegt.',
+    },
+    { id: 'REQ-002', status: 'compliant', is_blocking: false },
+  ]);
+  assert.deepEqual(unknown.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 0,
+    needs_review_count: 1,
+    blocking_issues: 0,
+  });
+
+  const absent = (await run({
+    reference_evidence_unknown_ids: [],
+    reference_evidence_absent_ids: ['REQ-001'],
+  }))[0][0].json;
+  assert.equal(absent.bid_recommendation, 'recommend_no_bid');
+  assert.deepEqual(absent.eligibility_requirements, [
+    { id: 'REQ-001', status: 'not_met', is_blocking: true },
+    { id: 'REQ-002', status: 'compliant', is_blocking: false },
+  ]);
+  assert.deepEqual(absent.eligibility_summary, {
+    compliant_count: 1,
+    partial_count: 0,
+    not_met_count: 1,
+    blocking_issues: 1,
+  });
+});
+
+test('stage 3 accepts a model-declared needs-review judgment before and after repair', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      { id: 'REQ-001', status: 'needs_review', is_blocking: false },
+      { id: 'REQ-002', status: 'compliant', is_blocking: false },
+    ],
+  };
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const result = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      stage3Context(),
+    );
+
+    assert.equal(result[0][0].json.reconciliation_required, false);
+  }
+});
+
+test('stage 3 rejects eligibility evidence that is absent from the prepared profile', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['commercial_register_number'],
+        assessment_reason: 'Ein Registereintrag sei angeblich belegt.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'needs_review',
+        is_blocking: false,
+        profile_evidence: [],
+        assessment_reason: 'Kein belastbarer Profilnachweis hinterlegt.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['certifications'],
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      ['eligibility_requirements[0].profile_evidence'],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
+test('stage 3 rejects available profile fields that cannot directly prove the requirement', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['trades'],
+        assessment_reason: 'Das Gewerk allein belege angeblich das Zertifikat.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'needs_review',
+        is_blocking: false,
+        profile_evidence: [],
+        assessment_reason: 'Kein direkter Profilnachweis hinterlegt.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['trades', 'certifications'],
+    },
+    requirement_evidence_fields: {
+      'REQ-001': ['certifications'],
+      'REQ-002': [],
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      ['eligibility_requirements[0].profile_evidence'],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
+test('stage 3 rejects unsupported negative or complete judgments even with a related field', async () => {
+  const candidate = {
+    ...validEvaluation,
+    eligibility_requirements: [
+      {
+        id: 'REQ-001',
+        status: 'not_met',
+        is_blocking: true,
+        profile_evidence: ['certifications'],
+        assessment_reason: 'Ein nicht genannter Nachweis wurde fälschlich als fehlend gewertet.',
+      },
+      {
+        id: 'REQ-002',
+        status: 'compliant',
+        is_blocking: false,
+        profile_evidence: ['team_size'],
+        assessment_reason: 'Die aktuelle Teamgröße belege angeblich die dreijährige Aufstellung vollständig.',
+      },
+    ],
+  };
+  const context = stage3Context();
+  context.set('prepare-context', [{ json: {
+    profile_evidence_contract: {
+      version: 1,
+      available_fields: ['certifications', 'team_size'],
+    },
+    requirement_evidence_fields: {
+      'REQ-001': ['certifications'],
+      'REQ-002': ['team_size'],
+    },
+    requirement_evidence_policy: {
+      'REQ-001': {
+        allowed_fields: ['certifications'],
+        allowed_statuses: ['compliant', 'partial', 'needs_review'],
+      },
+      'REQ-002': {
+        allowed_fields: ['team_size'],
+        allowed_statuses: ['partial', 'needs_review'],
+      },
+    },
+  } }]);
+
+  for (const nodeId of ['inspect-evaluation', 'inspect-repaired-evaluation']) {
+    const inspected = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', nodeId) },
+      [{ json: llmResponse(candidate) }],
+      context,
+    );
+    assert.equal(inspected[0][0].json.reconciliation_required, true);
+    assert.deepEqual(
+      (inspected[0][0].json.reconciliation_findings as Array<{ path: string }>).map(item => item.path),
+      [
+        'eligibility_requirements[0].status',
+        'eligibility_requirements[1].status',
+      ],
+    );
+  }
+
+  await assert.rejects(
+    codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(candidate) }],
+      context,
+    ),
+    /LLM_RESPONSE_INVALID_JSON/,
+  );
+});
+
 test('stage 3 routes one safe invalid draft through evidence-grounded reconciliation', async () => {
   const valid = await codeExecutor.execute(
     { code: workflowCode('tender-stage3-evaluation.json', 'inspect-evaluation') },
@@ -1523,8 +2284,10 @@ test('stage 3 routes one safe invalid draft through evidence-grounded reconcilia
       .filter((edge) => edge.from === 'route-evaluation-reconciliation')
       .map((edge) => [edge.from_output, edge.to])
       .sort((left, right) => Number(left[0]) - Number(right[0])),
-    [[0, 'reconcile-evaluation-llm'], [1, 'parse-evaluation']],
+    [[0, 'attach-evidence-to-repair'], [1, 'parse-evaluation']],
   );
+  assert.ok(workflow.edges.some((edge) =>
+    edge.from === 'attach-evidence-to-repair' && edge.to === 'reconcile-evaluation-llm'));
 
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.GEMINI_API_KEY;
@@ -1667,6 +2430,88 @@ test('stage 3 review fallback preserves a validated blocker and never schedules 
       .sort((left, right) => Number(left[0]) - Number(right[0])),
     [[0, 'build-review-fallback'], [1, 'parse-evaluation']],
   );
+});
+
+test('stage 3 evidence policy preserves the reconciliation fallback guard and downstream no-LV gate', async () => {
+  const runFallbackPath = async ({
+    coverage = completeRequirementsCoverage(),
+    exactEvidence = [],
+    blocker = false,
+    itemCount = 2,
+  }: {
+    coverage?: unknown;
+    exactEvidence?: Record<string, unknown>[];
+    blocker?: boolean;
+    itemCount?: number;
+  }) => {
+    const requirements = [
+      { id: 'REQ-001', is_critical: blocker },
+      { id: 'REQ-002', is_critical: false },
+    ];
+    const candidate = {
+      ...allCompliantEvaluation,
+      strategic_fit_score: 82,
+      eligibility_requirements: requirements.map((requirement) => ({
+        id: requirement.id,
+        status: blocker && requirement.id === 'REQ-001' ? 'not_met' : 'compliant',
+        is_blocking: blocker && requirement.id === 'REQ-001',
+      })),
+    };
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: {
+        id: 'tender-id', requirements, requirements_coverage: coverage,
+        eligibility_requirements: [], item_count: itemCount,
+      } }]],
+      ['prepare-context', [{ json: {} }]],
+      ['attach-requirement-evidence', [{ json: {
+        tender_requirement_evidence: exactEvidence,
+      } }]],
+      ['inspect-evaluation', [{ json: { reconciliation_candidate: candidate } }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ]);
+    const fallback = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'build-review-fallback') },
+      [{ json: {
+        reconciliation_candidate: candidate,
+        reconciliation_source_requirements: requirements,
+      } }],
+      context,
+    );
+    const applied = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+      fallback[0],
+      context,
+    );
+    return codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'finalize-evaluation') },
+      applied[0],
+      context,
+    );
+  };
+
+  const guarded = await runFallbackPath({});
+  assert.equal(guarded[0][0].json.bid_recommendation, 'needs_review');
+
+  const withExactVerifiedEvidence = await runFallbackPath({
+    exactEvidence: [{
+      evidence_id: 'exact-req-001', requirement_id: 'REQ-001', title: 'Geprüfter Nachweis',
+      category: 'Sonstiges', status: 'verified', note: null, cert_reference: null,
+      cert_expiry: null, updated_at: '2026-09-04T12:00:00.000Z',
+    }],
+  });
+  assert.equal(withExactVerifiedEvidence[0][0].json.bid_recommendation, 'needs_review');
+
+  const incompleteCoverage = await runFallbackPath({
+    coverage: { ...completeRequirementsCoverage(), source_insufficient: true },
+  });
+  assert.equal(incompleteCoverage[0][0].json.bid_recommendation, 'needs_review');
+
+  const blocker = await runFallbackPath({ blocker: true });
+  assert.equal(blocker[0][0].json.bid_recommendation, 'recommend_no_bid');
+
+  const noLv = await runFallbackPath({ itemCount: 0 });
+  assert.equal(noLv[0][0].json.bid_recommendation, 'incomplete');
+  assert.equal(noLv[0][0].json.strategic_fit_score, null);
 });
 
 test('stage 3 explicitly selects coverage with the requirement inputs', () => {
@@ -1828,6 +2673,79 @@ test('stage 3 forces review for truncated, saturated, missing, or malformed cove
     );
     assert.equal(result[0][0].json.bid_recommendation, 'needs_review');
   }
+});
+
+test('stage 3 evidence policy cannot promote a source-coverage review to bid', async () => {
+  const coverageVariants: unknown[] = [
+    { ...completeRequirementsCoverage(), source_insufficient: true },
+    { ...completeRequirementsCoverage(), source_truncated: true, source_char_count: 200_001, extracted_char_count: 200_000 },
+    { ...completeRequirementsCoverage(25), requirement_limit_reached: true },
+    undefined,
+    { source_truncated: false, requirement_limit_reached: false },
+  ];
+
+  for (const coverage of coverageVariants) {
+    const tender: Record<string, unknown> = {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      eligibility_requirements: [],
+    };
+    if (coverage !== undefined) tender.requirements_coverage = coverage;
+    const context: ExecutionContext = new Map([
+      ['load-requirements', [{ json: tender }]],
+      ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+      ['attach-requirement-evidence', [{ json: {} }]],
+    ]);
+    const parsed = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+      [{ json: llmResponse(allCompliantEvaluation) }],
+      context,
+    );
+    assert.equal(parsed[0][0].json.recommendation_guard, 'source_coverage');
+    const applied = await codeExecutor.execute(
+      { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+      parsed[0],
+      context,
+    );
+    assert.equal(applied[0][0].json.bid_recommendation, 'needs_review');
+  }
+
+  const completeContext: ExecutionContext = new Map([
+    ['load-requirements', [{ json: {
+      id: 'tender-id',
+      requirements: [{ id: 'REQ-001' }, { id: 'REQ-002' }],
+      requirements_coverage: completeRequirementsCoverage(),
+      eligibility_requirements: [],
+    } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+    ['attach-requirement-evidence', [{ json: {} }]],
+  ]);
+  const parsedComplete = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') },
+    [{ json: llmResponse(allCompliantEvaluation) }],
+    completeContext,
+  );
+  assert.equal('recommendation_guard' in parsedComplete[0][0].json, false);
+  const appliedComplete = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+    parsedComplete[0],
+    completeContext,
+  );
+  assert.equal(appliedComplete[0][0].json.bid_recommendation, 'recommend_bid');
+
+  const stricter = await codeExecutor.execute(
+    { code: workflowCode('tender-stage3-evaluation.json', 'apply-requirement-evidence-policy') },
+    [{ json: {
+      ...parsedComplete[0][0].json,
+      recommendation_guard: 'source_coverage',
+      eligibility_requirements: [
+        { id: 'REQ-001', status: 'not_met', is_blocking: true },
+        { id: 'REQ-002', status: 'compliant', is_blocking: false },
+      ],
+    } }],
+    completeContext,
+  );
+  assert.equal(stricter[0][0].json.bid_recommendation, 'recommend_no_bid');
 });
 
 test('stage 3 derives recommendation policy before applying a coverage override', async () => {
@@ -2231,10 +3149,11 @@ test('stage 3 normalizes nested JSON strings and preserves a valid evaluation wi
     [{ json: llmResponse(nestedEvaluation) }],
     stage3Context(),
   );
+  const { score_components: _scoreComponents, ...expectedEvaluation } = validEvaluation;
 
   assert.deepEqual(result, [[{ json: {
     id: 'tender-id',
-    ...validEvaluation,
+    ...expectedEvaluation,
     processing_status: 'complete',
     distance_km: 47.5,
     distance_note: '47,5 km zum Bauort',
