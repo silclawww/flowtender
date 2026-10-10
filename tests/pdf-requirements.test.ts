@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { pdfSourceBlocks, materializePdfSourceRefs, extractPdfChunks, pdfRequirementChunks, mergePdfExtractions, validatePdfExtraction, pdfExtractionKey, administrativeKind, type PdfNote } from '../lib/ingestion/pdf-requirements.ts';
+import { pdfSourceBlocks, materializePdfSourceRefs, extractPdfChunks, pdfRequirementChunks, mergePdfExtractions, validatePdfExtraction, pdfExtractionKey, administrativeKind, hasExclusionLanguage, PDF_REQUIREMENTS_PROMPT, PDF_REQUIREMENTS_VERSION, type PdfNote } from '../lib/ingestion/pdf-requirements.ts';
 import { boundedPdfCacheOperation, createPdfExtractionCache, cachedPdfExtraction, type PdfExtractionCache } from '../lib/ingestion/pdf-extraction-cache.ts';
 import { createPdfRequirementsExecutor } from '../lib/nodes/pdf-requirements.ts';
 import { WorkflowDeadlineError } from '../lib/retry-errors.ts';
@@ -194,7 +194,7 @@ test('long source blocks remain bounded and stable without cross-page concatenat
     assert.doesNotThrow(() => validatePdfExtraction(materialized, original, catalogue));
   }
 });
-test('technical reports/proofs remain substantive requirements', () => {
+test('administrative routing never drops technical clauses; bidder-qualification scope is set by the prompt', () => {
   const clauses = [
     'Beschädigte Schilder sind vor Ausbau zu melden und mit Fotografie zu dokumentieren.',
     'Eignungsnachweis für Asphaltmischgut ist vorzulegen.',
@@ -281,4 +281,28 @@ test('conflict winner reads also honor the workflow deadline', async () => {
   };
   await assert.rejects(cachedPdfExtraction(cache, 'key', source, catalogue, async () => raw(), { deadline: Date.now() + 15 }), WorkflowDeadlineError);
   assert.equal(reads, 2); assert.equal(aborted, true);
+});
+
+test('exclusion flag requires an explicit exclusion consequence or minimum eligibility standard in the cited source', () => {
+  const clauses = [
+    'Fehlt der Nachweis der Betriebshaftpflichtversicherung, wird das Angebot ausgeschlossen.',
+    'Mindestanforderungen an die Eignung: Mindestumsatz 2 Mio. EUR.',
+    'Der Probenehmer muss nach DepV die Fachkunde nachweisen können.',
+    'Der Eignungsnachweis für das Asphaltmischgut ist zwingend vorzulegen.',
+  ];
+  const original = '[[SOURCE q.pdf PAGE 1]]\n' + clauses.join('\n');
+  const requirements = clauses.map(description => ({ ...req(4), category: 'Personal', title: description.slice(0, 40), description, source_fragments: ['[[SOURCE q.pdf PAGE 1]] ' + description] }));
+  const critical = new Map(validatePdfExtraction({ requirements }, original, catalogue).requirements.map(r => [r.description, r.is_critical]));
+  assert.deepEqual(clauses.map(c => critical.get(c)), [true, true, false, false]);
+  assert.equal(hasExclusionLanguage(['Nichtberücksichtigung des Angebots bei Fehlen']), true);
+  assert.equal(hasExclusionLanguage(['Verbau nach DIN 4124']), false);
+  const notCritical = validatePdfExtraction({ requirements: [{ ...requirements[0], is_critical: false }] }, original, catalogue);
+  assert.equal(notCritical.requirements[0].is_critical, false);
+});
+test('prompt scopes PDF requirements to bidder qualification and bumps the cache policy version', () => {
+  assert.match(PDF_REQUIREMENTS_VERSION, /v10-bidder-qualification/);
+  for (const scope of ['Präqualifikation', 'Referenzen', 'Versicherungsnachweise', 'Personal', 'leere Liste']) assert.ok(PDF_REQUIREMENTS_PROMPT.includes(scope), scope);
+  assert.match(PDF_REQUIREMENTS_PROMPT, /NICHT AUFNEHMEN: technische Ausführungsvorgaben aus Leistungsverzeichnis/);
+  assert.match(PDF_REQUIREMENTS_PROMPT, /Material-, Produkt- und Lieferantennachweise/);
+  assert.doesNotMatch(PDF_REQUIREMENTS_PROMPT, /Leistungspflichten|Entsorgungsnachweise\./);
 });
