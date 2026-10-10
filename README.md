@@ -307,6 +307,12 @@ exclude it. Private bucket configuration alone does not supersede an existing
 permissive RLS policy. There is no database migration. PDF extraction persists only requirements and
 coverage through the existing fields; stage1 deadline/execution metadata is unchanged.
 No new administrative dates, submission-method or document notes are extracted or saved.
+PDF requirements are bidder qualification only (prequalification/self-declaration,
+references, company certificates and registrations, insurance, staff qualifications,
+economic/technical capacity). Bill-of-quantities execution specs, material/product
+proofs, contract and price terms are not extracted; an LV-only PDF may legitimately
+yield an empty list. `is_critical` (exclusion criterion) is only kept when the cited
+source states an exclusion consequence or a minimum eligibility standard.
 
 The cache stores only validated PDF source extraction, not company eligibility,
 profile evidence, scores, decisions, or later evaluation. Keys include organization,
@@ -318,7 +324,7 @@ change intentionally creates a new snapshot on the next run; never overwrite an
 existing snapshot. Changing filenames/source markers or catalogue also changes the
 key. Reuse is not a claim that independent model calls are deterministic.
 
-For the same key, subsequent uploads reuse the stored canonical substantive requirements without another extraction call.
+For the same key, subsequent uploads reuse the stored canonical qualification requirements without another extraction call.
 Concurrent misses use atomic create: all callers return the first successfully
 persisted validated snapshot. Only a complete, validated chunk result is saved. The first two source pages
 are isolated from the remaining bounded chunks so introductory conditions retain
