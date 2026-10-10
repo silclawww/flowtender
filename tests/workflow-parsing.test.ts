@@ -492,6 +492,10 @@ test('stage 1 PDF preserves valid metadata and source fields', async () => {
     category: validPdfMetadata.category,
     tendertype: validPdfMetadata.tender_type,
     source_type: 'pdf',
+    gaeb_positions: [],
+    item_count: 0,
+    raw_gaeb_json: [{source_type: 'pdf', pdf_extraction: {status: 'unsupported', verified_complete: false}, source_metadata: {}}],
+    execution_start: null, execution_end: null, bindefrist_datum: null, vergabenummer: null,
     source_filename: 'ausschreibung.pdf',
     pdf_text: 'Extracted PDF text',
     page_count: 12,
@@ -3158,4 +3162,87 @@ test('stage 3 normalizes nested JSON strings and preserves a valid evaluation wi
     distance_km: 47.5,
     distance_note: '47,5 km zum Bauort',
   } }]]);
+});
+
+test('PDF archive text requires real source markers and retains PDF-derived rows', async () => {
+  const code=workflowCode('tender-stage1-pdf.json','extract-text');
+  const result=await codeExecutor.execute({code},[{json:{pdf_texts:{'one':'[[SOURCE mixed.pdf PAGE 3]]\n1.10. Boden\n2,000 m3 ........'}}}],new Map());
+  assert.equal((result[0][0].json.pdf_extracted as {positions:unknown[]}).positions.length,1);
+  assert.match(String(result[0][0].json.pdf_text),/SOURCE mixed.pdf PAGE 3/);
+  await assert.rejects(codeExecutor.execute({code},[{json:{pdf_texts:{one:'Text without page evidence'}}}],new Map()),/PDF_SOURCE_REFERENCES_REQUIRED/);
+});
+
+test('PDF incomplete, unknown workload and ungrounded sources cannot yield confident bids', async () => {
+  const code=workflowCode('tender-stage3-evaluation.json','finalize-evaluation');
+  for (const count of [undefined,null,0]) {
+    const context:ExecutionContext=new Map([['load-requirements',[{json:{item_count:count}}]]]);
+    const r=await codeExecutor.execute({code},[{json:{bid_recommendation:'recommend_bid',strategic_fit_score:90}}],context);
+    assert.equal(r[0][0].json.bid_recommendation,'incomplete');
+  }
+  const context:ExecutionContext=new Map([['load-requirements',[{json:{item_count:2,source_type:'pdf',raw_gaeb_json:[{pdf_extraction:{status:'pattern_matched'}}],requirements_coverage:{source_insufficient:true}}}]]]);
+  const r=await codeExecutor.execute({code},[{json:{bid_recommendation:'recommend_no_bid'}}],context);
+  assert.equal(r[0][0].json.bid_recommendation,'needs_review');
+});
+
+test('marked PDF archive text cannot manufacture usable content from markers and footers', async () => {
+  const code=workflowCode('tender-stage1-pdf.json','extract-text');
+  for (const text of ['[[SOURCE blank.pdf PAGE 1]]','[[SOURCE blank.pdf PAGE 1]]\n-- 1 of 1 --\nSeite: 1 von 1']) {
+    await assert.rejects(codeExecutor.execute({code},[{json:{pdf_texts:{one:text}}}],new Map()),/PDF_TEXT_UNAVAILABLE/);
+  }
+});
+
+test('GAEB 2000 context preserves deadline semantics, generic PDF evidence and zero quantities', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage1-gaeb.json', 'normalise') },
+    [{ json: {
+      tender_id: 'legacy-tender', org_id: 'org-id',
+      gaeb_files: [{ file: 'legacy.p83', project: { name: '2627600354', label: 'Bridge repairs' }, metadata: { data_phase: '83', award_fields: { ErDatum: '30.10.2026', ErUhrzeit: '00:00', ZusEnde: '04.01.2027' } }, bill_of_quantities: { total_items: 1, entries: [{ type: 'item', position: '01.0001', quantity: 0, unit: 'm3', short_text: 'Earthworks' }] } }],
+      pdf_texts: { other: '[[SOURCE generic.pdf PAGE 1]] This supporting document has a generic filename.' },
+    } }], new Map(),
+  );
+  const output = result[0][0].json as { _gaeb_context: string; gaeb_positions: Array<{ quantity: number | null }> };
+  assert.equal(output.gaeb_positions[0].quantity, 0);
+  assert.match(output._gaeb_context, /Angebots-\/Eröffnungstermin \(GAEB 2000\): 30\.10\.2026/);
+  assert.match(output._gaeb_context, /Bindefrist, NICHT Ausführungsende \(GAEB 2000\): 04\.01\.2027/);
+  assert.doesNotMatch(output._gaeb_context, /Uhrzeit.*00:00/);
+  assert.match(output._gaeb_context, /supporting document/);
+});
+
+test('stage 2 requests strict chunk-local classification and group schemas without relaxing semantic validation', async () => {
+  for (const rules of [[], [{ id: 'own-earth', work_type: 'Erdbau', outcome: 'own' }]]) {
+    const positions = Array.from({ length: 121 }, (_, i) => ({ id: String(i), short_text: 'Erdbau', unit: 'm3', category_path: [] }));
+    const context: ExecutionContext = new Map([
+      ['load-tender', [{ json: { gaeb_positions: positions } }]],
+      ['load-company-profile', [{ json: { subcontracting_rules: rules } }]],
+    ]);
+    const [chunks] = await codeExecutor.execute(
+      { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') }, [{ json: {} }], context,
+    );
+    for (const [index, chunk] of chunks.entries()) {
+      const body = chunk.json.request_body as Record<string, any>;
+      const format = body.response_format;
+      assert.equal(format.type, 'json_schema');
+      assert.equal(format.json_schema.strict, true);
+      const schema = format.json_schema.schema;
+      assert.equal(schema.additionalProperties, false);
+      assert.deepEqual(schema.required, ['classifications', 'groups']);
+      const ids = index === 0 ? Array.from({ length: 120 }, (_, i) => workloadClassificationKey(i)) : ['POS-121'];
+      const classification = schema.properties.classifications;
+      assert.equal(classification.minItems, undefined);
+      assert.equal(classification.maxItems, undefined);
+      assert.equal(classification.items.additionalProperties, false);
+      assert.deepEqual(classification.items.required, ['id', 'type', 'rule_id']);
+      assert.deepEqual(classification.items.properties.id.enum, ids);
+      assert.deepEqual(classification.items.properties.type.enum, ['eigen', 'fremd', 'liefer']);
+      assert.deepEqual(classification.items.properties.rule_id, rules.length
+        ? { anyOf: [{ type: 'string', enum: ['own-earth'] }, { type: 'null' }] } : { type: 'null' });
+      const group = schema.properties.groups.items;
+      assert.equal(group.additionalProperties, false);
+      assert.deepEqual(group.properties.position_ids.items.enum, ids);
+      assert.deepEqual(group.properties.kind.enum, ['semantic', 'ambiguous']);
+      assert.equal(group.properties.confidence.minimum, 0);
+      assert.equal(group.properties.confidence.maximum, 1);
+      assert.equal(body.temperature, 0);
+    }
+  }
 });
