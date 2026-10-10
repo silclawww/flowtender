@@ -296,6 +296,10 @@ test('exclusion flag requires an explicit exclusion consequence or minimum eligi
   assert.deepEqual(clauses.map(c => critical.get(c)), [true, true, false, false]);
   assert.equal(hasExclusionLanguage(['Nichtberücksichtigung des Angebots bei Fehlen']), true);
   assert.equal(hasExclusionLanguage(['Verbau nach DIN 4124']), false);
+  for (const yes of ['Unvollständige Angebote werden ausgeschlossen.', 'Das Fehlen führt zum Ausschluß.', 'Fehlt der Nachweis, bleibt das Angebot unberücksichtigt.', 'Dies ist ein KO-Kriterium.', 'Ausschlusskriterium: Haftpflicht', 'Der Bieter wird vom Verfahren ausgeschlossen.', 'Mindestanforderungen an die Eignung', 'führt zum Aus-\nschluss des Angebots'])
+    assert.equal(hasExclusionLanguage([yes]), true, yes);
+  for (const no of ['Nebenangebote sind ausgeschlossen. Haftpflicht 3 Mio nachzuweisen.', 'Haftungsausschluss des AG', 'Ausschlussfristen für Mängelansprüche', 'Ausschluss von Recyclingmaterial', 'Das Labor muss Mindestanforderungen entsprechen.', 'Die Wurzelstockentfernung durch Sprengung ist ausgeschlossen.'])
+    assert.equal(hasExclusionLanguage([no]), false, no);
   const notCritical = validatePdfExtraction({ requirements: [{ ...requirements[0], is_critical: false }] }, original, catalogue);
   assert.equal(notCritical.requirements[0].is_critical, false);
 });

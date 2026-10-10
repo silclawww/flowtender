@@ -79,11 +79,24 @@ export function administrativeKind(item: PdfNote): AdministrativeKind | null {
   if (bidContext && /erklärung.{0,40}(ausfüll|einreich|vorleg|beifüg)|vergabespezifische erklärung/.test(text)) return 'document';
   return null;
 }
-// An exclusion flag must be backed by an explicit exclusion consequence or a stated
-// minimum eligibility standard in the cited source, never by the model's judgement alone.
-const EXCLUSION_LANGUAGE = /ausschluss|ausgeschlossen|auszuschlie(ß|ss)en|nicht berücksichtigt|nichtberücksichtigung|nicht gewertet|nicht in die wertung|mindestanforderung(en)? an die eignung|eignungsmindestanforderung|k\.\s?o\.-kriterium/;
+// An exclusion flag must be backed by an explicit, offer- or bidder-tied exclusion
+// consequence or a stated minimum eligibility standard in the cited source blocks.
+// Coarse backstop over whole blocks: unrelated wording ("Nebenangebote sind
+// ausgeschlossen", "Haftungsausschluss", "Ausschlussfristen") does not qualify.
+const OFFER = String.raw`(?<!neben)(?<!haupt)\b(?:angebot|bieter|bewerber|unternehmen)`;
+const EXCLUDED = String.raw`(?:ausgeschlossen|auszuschlie(?:ß|ss)en|unberücksichtigt|nicht (?:weiter )?berücksichtigt|nicht gewertet|nicht in die wertung)`;
+const EXCLUSION_LANGUAGE = new RegExp([
+  OFFER + String.raw`\w*[^.;]{0,120}?` + EXCLUDED,
+  EXCLUDED + String.raw`[^.;]{0,40}?` + OFFER,
+  String.raw`(?:führt|führen) (?:zum|zur) (?:ausschlu(?:ss|ß)|nichtberücksichtigung)`,
+  String.raw`ausschlu(?:ss|ß) (?:des|der|vom|von der|aus dem) (?:angebot|bieter|bewerber|vergabeverfahren|verfahren|wertung|wettbewerb)`,
+  String.raw`nichtberücksichtigung (?:des|der|von) (?:angebot|bieter|bewerber)`,
+  String.raw`ausschlu(?:ss|ß)(?:kriteri|grund|gründe)`, String.raw`k\.?\s?o\.?-kriteri`,
+  String.raw`mindestanforderung(?:en)? an die (?:eignung|leistungsfähigkeit|fachkunde)`, String.raw`eignungsmindestanforderung`,
+].join('|'));
 export function hasExclusionLanguage(fragments: string[]): boolean {
-  return EXCLUSION_LANGUAGE.test(compact(fragments.join(' ')).toLowerCase());
+  // Re-join words hyphenated across PDF line breaks ("Aus-\nschluss").
+  return EXCLUSION_LANGUAGE.test(compact(fragments.join(' ')).toLowerCase().replace(/(\p{Ll})- (\p{Ll})/gu, '$1$2'));
 }
 function canonical<T extends PdfNote>(items: T[], prefix: string): T[] {
   const byContent = new Map<string, T>();
