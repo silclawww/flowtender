@@ -19,7 +19,7 @@ const lines = [
 const source = '[[SOURCE tender.pdf PAGE 1]]\n' + lines.join('\n');
 const note = (index: number, title = lines[index]): PdfNote => ({ id: '', title, description: lines[index], source_fragments: ['[[SOURCE tender.pdf PAGE 1]] ' + lines[index]] });
 const req = (index: number) => ({ ...note(index), category: 'Sonstiges', is_critical: true, is_implicit: false, evidence_kind: 'other', certificate_catalogue_id: null });
-const raw = () => ({ requirements: lines.map((_, i) => req(i)), deadlines: [], documents: [] });
+const raw = () => ({ requirements: lines.map((_, i) => req(i)) });
 function memoryCache(): PdfExtractionCache {
   const entries = new Map<string, unknown>();
   return { async read(key) { return entries.get(key) ?? null; }, async create(key, value) { if (entries.has(key)) return 'conflict'; entries.set(key, value); return 'created'; } };
@@ -29,9 +29,7 @@ test('pure logistics route out; qualification in form and technical waiting peri
   assert.equal(result.requirements.length, 2);
   assert.ok(result.requirements.some(v => v.description.includes('ISO 9001')));
   assert.ok(result.requirements.some(v => v.description.includes('Aushärtezeit')));
-  assert.deepEqual(new Set(result.deadlines.map(v => v.kind)), new Set(['submission', 'binding', 'execution']));
-  assert.equal(result.documents.length, 1);
-  assert.equal(result.deadlines.find(v => v.kind === 'submission')?.description, lines[0]);
+  assert.deepEqual(Object.keys(result).sort(), ['output_limit_reached', 'requirements']);
   assert.equal(administrativeKind({ ...note(0), title: 'Einreichungsweg', description: 'Einreichung schriftlich oder per E-Mail.' }), 'submission_method');
   assert.equal(administrativeKind({ ...note(0), title: 'Einreichungsweg', description: 'Schriftlich oder per E-Mail oder als DA84' }), 'submission_method');
   assert.equal(administrativeKind({ ...note(4), title: 'Vordruck', description: 'Nachweis der Sachkunde im Vordruck' }), null);
@@ -43,7 +41,7 @@ test('pure logistics route out; qualification in form and technical waiting peri
 });
 test('quotes must come from stated page and cannot be paraphrased; implicit and invalid catalogue rejected', () => {
   for (const fragment of ['[[SOURCE tender.pdf PAGE 2]] ' + lines[4], '[[SOURCE invented.pdf PAGE 1]] ' + lines[4], '[[SOURCE tender.pdf PAGE 1]] ISO 9001 ist optional.']) {
-    assert.throws(() => validatePdfExtraction({ requirements: [{ ...req(4), source_fragments: [fragment] }], deadlines: [], documents: [] }, source, catalogue), /PDF_EXTRACTION_INVALID/);
+    assert.throws(() => validatePdfExtraction({ requirements: [{ ...req(4), source_fragments: [fragment] }] }, source, catalogue), /PDF_EXTRACTION_INVALID/);
   }
   assert.throws(() => validatePdfExtraction({ ...raw(), requirements: [{ ...req(4), is_implicit: true }] }, source, catalogue));
   assert.throws(() => validatePdfExtraction({ ...raw(), requirements: [{ ...req(4), evidence_kind: 'certificate', certificate_catalogue_id: 'invented' }] }, source, catalogue));
@@ -102,7 +100,7 @@ test('GAEB delegates exact config and inputs; PDF single strict call then cache 
   const first = await executor.execute(config, inputs, context);
   assert.deepEqual(await executor.execute(config, inputs, context), first); assert.equal(calls, 2);
 });
-test('workflow isolates PDF notes writes and preserves coverage and legacy Form216 path', async () => {
+test('workflow saves requirements only, preserves existing metadata and legacy Form216 path', async () => {
   const workflow = JSON.parse(readFileSync(new URL('../workflows/tender-stage2-requirements.json', import.meta.url), 'utf8'));
   const node = (id: string) => workflow.nodes.find((n: { id: string }) => n.id === id);
   assert.equal(node('extract-requirements-llm').type, 'pdf_requirements');
@@ -111,10 +109,14 @@ test('workflow isolates PDF notes writes and preserves coverage and legacy Form2
   const context: Record<string, unknown> = { 'load-tender': { source_type: 'pdf' }, 'prepare-extraction-text': { requirements_coverage: coverage } };
   const parse = new Function('$json', '$', node('parse-requirements').config.code);
   const result = parse({ pdf_extraction: extraction }, (id: string) => ({ first: () => ({ json: context[id] }) }))[0].json;
-  assert.deepEqual(result.pdf_administrative, { version: 1, deadlines: extraction.deadlines, documents: extraction.documents });
+  assert.equal(result.pdf_administrative, undefined);
   assert.equal(result.requirements_coverage.source_truncated, true);
   assert.ok(!('aufforderung_211' in node('save-requirements').config.data));
-  assert.match(node('route-pdf-administrative').config.condition, /source_type === 'pdf'/);
+  assert.equal(node('route-pdf-administrative'), undefined);
+  assert.equal(node('save-pdf-administrative'), undefined);
+  assert.ok(!('required_documents' in node('save-requirements').config.data));
+  assert.match(node('build-response-2').config.code, /required_documents: tender.required_documents/);
+  assert.doesNotMatch(node('build-response-2').config.code, /pdf_administrative/);
   assert.match(node('parse-requirements').config.code, /REQ-F216-/);
 });
 test('raw output cap remains a review flag after admin routing, deduplication and cache validation', async () => {
@@ -150,7 +152,7 @@ test('chunk extraction collects every result with concurrency2 and sorts pages n
     active++; peak = Math.max(peak, active); calls++;
     await new Promise(resolve => setTimeout(resolve, 1)); active--;
     const refs = [...chunk.matchAll(/SOURCE_BLOCK_ID: (S\d+)/g)].map(match => match[1]);
-    return { requirements: [{ ...req(4), source_refs: [refs[refs.length - 1]] }], deadlines: [], documents: [] };
+    return { requirements: [{ ...req(4), source_refs: [refs[refs.length - 1]] }] };
   }, 2000);
   assert.equal(calls, 3); assert.equal(peak, 2); assert.equal(result.requirements.length, 3);
   assert.deepEqual(result.requirements.map(v => Number(v.source_fragments[0].match(/PAGE (\d+)/)![1])), [1, 2, 11]);
@@ -173,13 +175,13 @@ test('source block IDs materialize original multipage excerpts and retain split-
   const original = '[[SOURCE tender.pdf PAGE 16]]\nDie Prüfzeugnisse für Wasserbausteine sind\n[[SOURCE tender.pdf PAGE 17]]\nvor dem Einbau vorzulegen.\n[[SOURCE tender.pdf PAGE 21]]\nDie Geokunst-\nstoffen sind zu prüfen.';
   const blocks = pdfSourceBlocks(original);
   assert.equal(blocks.length, 3);
-  const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [blocks[0].ref, blocks[1].ref, blocks[2].ref] }], deadlines: [], documents: [] }, blocks);
+  const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [blocks[0].ref, blocks[1].ref, blocks[2].ref] }] }, blocks);
   const value = validatePdfExtraction(materialized, original, catalogue);
   assert.equal(value.requirements[0].source_fragments.length, 3);
   assert.ok(value.requirements[0].source_fragments.some(fragment => fragment.includes('Geokunst- stoffen')));
   assert.ok(value.requirements[0].source_fragments.some(fragment => fragment.includes('PAGE 17')));
-  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: ['S999999'] }], deadlines: [], documents: [] }, blocks), /PDF_EXTRACTION_INVALID/);
-  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [] }], deadlines: [], documents: [] }, blocks), /PDF_EXTRACTION_INVALID/);
+  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: ['S999999'] }] }, blocks), /PDF_EXTRACTION_INVALID/);
+  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [] }] }, blocks), /PDF_EXTRACTION_INVALID/);
 });
 test('long source blocks remain bounded and stable without cross-page concatenation', () => {
   const original = '[[SOURCE tender.pdf PAGE 1]]\n' + 'A sentence with original wording.\n'.repeat(100) + '[[SOURCE tender.pdf PAGE 2]]\nA different page original sentence.';
@@ -188,11 +190,11 @@ test('long source blocks remain bounded and stable without cross-page concatenat
   assert.equal(new Set(blocks.map(v => v.ref)).size, blocks.length);
   assert.ok(blocks.every(v => v.fragment.length <= 1050));
   for (const block of blocks) {
-    const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [block.ref] }], deadlines: [], documents: [] }, blocks);
+    const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [block.ref] }] }, blocks);
     assert.doesNotThrow(() => validatePdfExtraction(materialized, original, catalogue));
   }
 });
-test('bidirectional guard retains technical reports/proofs wrongly labeled as dates/documents', () => {
+test('technical reports/proofs remain substantive requirements', () => {
   const clauses = [
     'Beschädigte Schilder sind vor Ausbau zu melden und mit Fotografie zu dokumentieren.',
     'Eignungsnachweis für Asphaltmischgut ist vorzulegen.',
@@ -202,9 +204,9 @@ test('bidirectional guard retains technical reports/proofs wrongly labeled as da
     'Messwerte sind elektronisch zu übermitteln.',
   ];
   const original = '[[SOURCE technical.pdf PAGE 1]]\n' + clauses.join('\n');
-  const notes = clauses.map(description => ({ title: description, description, source_fragments: ['[[SOURCE technical.pdf PAGE 1]] ' + description] }));
-  const result = validatePdfExtraction({ requirements: [], deadlines: [{ ...notes[0], kind: 'execution' }], documents: notes.slice(1) }, original, catalogue);
-  assert.equal(result.requirements.length, 6); assert.equal(result.deadlines.length, 0); assert.equal(result.documents.length, 0);
+  const requirements = clauses.map(description => ({ ...req(4), title: description, description, source_fragments: ['[[SOURCE technical.pdf PAGE 1]] ' + description] }));
+  const result = validatePdfExtraction({ requirements }, original, catalogue);
+  assert.equal(result.requirements.length, 6);
   assert.deepEqual(validatePdfExtraction(result, original, catalogue), result);
 });
 test('short source block tails and short pages are never discarded', () => {
@@ -213,20 +215,19 @@ test('short source block tails and short pages are never discarded', () => {
   const blocks = pdfSourceBlocks(original);
   assert.ok(blocks.some(v => v.fragment.endsWith('17.')));
   assert.equal(blocks[blocks.length - 1].fragment, '[[SOURCE original.pdf PAGE 2]] VOB');
-  const value = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: blocks.map(v => v.ref) }], deadlines: [], documents: [] }, blocks);
+  const value = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: blocks.map(v => v.ref) }] }, blocks);
   assert.doesNotThrow(() => validatePdfExtraction(value, original, catalogue));
 });
-test('unrecognized administrative wording is not evidence of a technical requirement', () => {
-  const lines = ['Das Angebot gilt bis zum 30.11.2026.', 'Schriftlich oder per E-Mail bis 16.10.'];
-  const original = '[[SOURCE formal.pdf PAGE 1]]\n' + lines.join('\n');
-  const result = validatePdfExtraction({ requirements: [], documents: [], deadlines: [
-    { title: 'Gültigkeit', description: lines[0], kind: 'binding', source_fragments: ['[[SOURCE formal.pdf PAGE 1]] ' + lines[0]] },
-    { title: 'Abgabe', description: lines[1], kind: 'submission_method', source_fragments: ['[[SOURCE formal.pdf PAGE 1]] ' + lines[1]] },
-  ] }, original, catalogue);
-  assert.equal(result.requirements.length, 0);
-  assert.equal(result.deadlines.length, 2);
-  assert.ok(result.deadlines.some(v => v.kind === 'binding'));
-  assert.ok(result.deadlines.some(v => v.kind === 'submission_method'));
+test('pure bid validity, submission method and signed offer LV are excluded without administrative output', () => {
+  const clauses = [
+    { title: 'Gültigkeit', description: 'Das Angebot gilt bis zum 30.11.2026.' },
+    { title: 'Abgabe', description: 'Schriftlich oder per E-Mail bis 16.10.' },
+    { title: 'Leistungsverzeichnis', description: 'Rechtsgültig unterschriebenes Leistungsverzeichnis einreichen.' },
+  ];
+  const original = '[[SOURCE formal.pdf PAGE 1]]\n' + clauses.map(v => v.description).join('\n');
+  const requirements = clauses.map(item => ({ ...req(0), ...item, source_fragments: ['[[SOURCE formal.pdf PAGE 1]] ' + item.description] }));
+  assert.deepEqual(validatePdfExtraction({ requirements }, original, catalogue), { requirements: [], output_limit_reached: false });
+  assert.throws(() => validatePdfExtraction({ requirements: [], deadlines: [], documents: [] }, original, catalogue), /PDF_EXTRACTION_INVALID/);
 });
 test('the first two physical pages are isolated from subsequent LV pages', () => {
   const original = [1, 2, 3, 4].map(page => `[[SOURCE tender.pdf PAGE ${page}]]\nOriginal contents of page ${page}.`).join('\n');
