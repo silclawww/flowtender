@@ -3190,3 +3190,20 @@ test('marked PDF archive text cannot manufacture usable content from markers and
     await assert.rejects(codeExecutor.execute({code},[{json:{pdf_texts:{one:text}}}],new Map()),/PDF_TEXT_UNAVAILABLE/);
   }
 });
+
+test('GAEB 2000 context preserves deadline semantics, generic PDF evidence and zero quantities', async () => {
+  const result = await codeExecutor.execute(
+    { code: workflowCode('tender-stage1-gaeb.json', 'normalise') },
+    [{ json: {
+      tender_id: 'legacy-tender', org_id: 'org-id',
+      gaeb_files: [{ file: 'legacy.p83', project: { name: '2627600354', label: 'Bridge repairs' }, metadata: { data_phase: '83', award_fields: { ErDatum: '30.10.2026', ErUhrzeit: '00:00', ZusEnde: '04.01.2027' } }, bill_of_quantities: { total_items: 1, entries: [{ type: 'item', position: '01.0001', quantity: 0, unit: 'm3', short_text: 'Earthworks' }] } }],
+      pdf_texts: { other: '[[SOURCE generic.pdf PAGE 1]] This supporting document has a generic filename.' },
+    } }], new Map(),
+  );
+  const output = result[0][0].json as { _gaeb_context: string; gaeb_positions: Array<{ quantity: number | null }> };
+  assert.equal(output.gaeb_positions[0].quantity, 0);
+  assert.match(output._gaeb_context, /Angebots-\/Eröffnungstermin \(GAEB 2000\): 30\.10\.2026/);
+  assert.match(output._gaeb_context, /Bindefrist, NICHT Ausführungsende \(GAEB 2000\): 04\.01\.2027/);
+  assert.doesNotMatch(output._gaeb_context, /Uhrzeit.*00:00/);
+  assert.match(output._gaeb_context, /supporting document/);
+});
