@@ -7,6 +7,19 @@ interface Position {
   unit: string | null; category_path: string[]; gaeb_phase: null;
   source_type: 'pdf'; source_file: string | null; source_page: number; quantity_page: number | null;
 }
+// PDF quantities are measurements, not arbitrary-precision numbers. Reject any
+// representation beyond 15 significant digits or 6 meaningful decimal places;
+// do not silently round a source number into a different quantity.
+function parseQuantity(text: string): number | null {
+  const normalized = text.replace(/\./g, '');
+  const [integer, fraction = ''] = normalized.split(',');
+  const meaningfulFraction = fraction.replace(/0+$/, '');
+  const significant = (integer + meaningfulFraction).replace(/^0+/, '');
+  if (significant.length > 15 || meaningfulFraction.length > 6) return null;
+  const value = Number(normalized.replace(',', '.'));
+  return Number.isFinite(value) && value <= Number.MAX_SAFE_INTEGER ? value : null;
+}
+
 export function extractPdfPositions(pages: PdfPage[], recognizedDepths?: Set<number>, requireTerminalDot = false) {
   if (pages.length > 2000 || pages.reduce((n, p) => n + p.text.length, 0) > 1000000) throw new Error('PDF_TEXT_LIMIT_EXCEEDED');
   const blocks: { id: string; title: string; lines: {text: string; page: number}[]; page: number; source_file?: string }[] = [];
@@ -48,12 +61,13 @@ export function extractPdfPositions(pages: PdfPage[], recognizedDepths?: Set<num
   let missing = 0;
   const positions: Position[] = candidates.map(b => {
     const rows = b.lines.flatMap(l => { const m = quantities.exec(l.text); return m ? [{m, page:l.page}] : []; });
-    const valid = rows.length === 1 && counts.get(b.id) === 1;
+    const quantity = rows.length === 1 ? parseQuantity(rows[0].m[1]) : null;
+    const valid = rows.length === 1 && counts.get(b.id) === 1 && quantity !== null;
     if (rows.length > 1 || counts.get(b.id)! > 1) ambiguous++;
-    else if (!rows.length) missing++;
+    else if (!valid) missing++;
     return {
       id:b.id, short_text:b.title, long_text:b.lines.map(l => l.text).join('\n'),
-      quantity:valid ? Number(rows[0].m[1].replace(/\./g, '').replace(',', '.')) : null,
+      quantity:valid ? quantity : null,
       unit:valid ? rows[0].m[2] : null,
       category_path:[], gaeb_phase:null, source_type:'pdf', source_file:b.source_file || null, source_page:b.page,
       quantity_page:valid ? rows[0].page : null,

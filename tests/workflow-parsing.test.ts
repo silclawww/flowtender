@@ -3183,3 +3183,10 @@ test('PDF incomplete, unknown workload and ungrounded sources cannot yield confi
   const r=await codeExecutor.execute({code},[{json:{bid_recommendation:'recommend_no_bid'}}],context);
   assert.equal(r[0][0].json.bid_recommendation,'needs_review');
 });
+
+test('marked PDF archive text cannot manufacture usable content from markers and footers', async () => {
+  const code=workflowCode('tender-stage1-pdf.json','extract-text');
+  for (const text of ['[[SOURCE blank.pdf PAGE 1]]','[[SOURCE blank.pdf PAGE 1]]\n-- 1 of 1 --\nSeite: 1 von 1']) {
+    await assert.rejects(codeExecutor.execute({code},[{json:{pdf_texts:{one:text}}}],new Map()),/PDF_TEXT_UNAVAILABLE/);
+  }
+});

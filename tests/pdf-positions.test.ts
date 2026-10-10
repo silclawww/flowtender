@@ -85,3 +85,12 @@ test('hierarchy inference never drops another file’s leaf; duplicate IDs stay 
   assert.equal(duplicate.coverage.status,'ambiguous');
   assert.ok(duplicate.positions.every(p=>p.quantity===null));
 });
+
+test('unrepresentable quantities stay unresolved rather than overflowing or rounding', () => {
+  for (const quantity of ['9'.repeat(400)+',000','9007199254740993,000','1234567890123,123','0,12345678901234567']) {
+    const r=extractPdfPositions([{num:1,text:`1.10. Work\n${quantity} m3 ........`}]);
+    assert.equal(r.positions[0].quantity,null);
+    assert.equal(r.coverage.extracted_count,0);
+    assert.equal(r.coverage.status,'incomplete');
+  }
+});
