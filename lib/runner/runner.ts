@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { loadWorkflow } from './loader.ts';
 import { codeExecutor } from '../nodes/code.ts';
+import { pdfRequirementsExecutor } from '../nodes/pdf-requirements.ts';
 import { httpRequestExecutor } from '../nodes/http-request.ts';
 import { supabaseExecutors } from '../nodes/supabase.ts';
 import { controlExecutors } from '../nodes/control.ts';
@@ -94,6 +95,7 @@ async function executeWithRetry(
 const NODE_EXECUTORS: Record<string, NodeExecutor> = {
   code: codeExecutor,
   http_request: httpRequestExecutor,
+  pdf_requirements: pdfRequirementsExecutor,
   gaeb_parse: gaebParseExecutor,
   ...supabaseExecutors,
   ...controlExecutors,

@@ -1,6 +1,7 @@
 export type NodeType =
   | 'code'
   | 'http_request'
+  | 'pdf_requirements'
   | 'supabase.query'
   | 'supabase.upsert'
   | 'supabase.update'

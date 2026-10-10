@@ -96,6 +96,7 @@ test('stage 2 scopes every privileged tender read and update to both IDs', () =>
     'load-tender',
     'set-status',
     'save-requirements',
+    'save-pdf-administrative',
   ]);
 
   for (const operation of tenderOperations) {
