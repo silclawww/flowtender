@@ -17,7 +17,7 @@ AUFNEHMEN nur, was der Bieter über sich selbst nachweisen muss: Präqualifikati
 NICHT AUFNEHMEN: technische Ausführungsvorgaben aus Leistungsverzeichnis oder Leistungsbeschreibung (Verfahren, Normen, Verdichtung, Schichtdicken, Verlegung, Schutz, Transport, Entsorgung, Beprobung, Prüfungen und Prüfprotokolle während der Ausführung, Dokumentation, Bestandsvermessung), Material-, Produkt- und Lieferantennachweise (Prüfzeugnisse, Leistungserklärungen, CE, Eignungsnachweise für Baustoffe oder Mischgut), Vertrags- und Preisbedingungen (VOB, Festpreise, Zahlungs-, Gewährleistungs-, Vertragsstrafen), Termine, Fristen, Bindefrist, Einreichungsweg, Angebotsschreiben/Angebotsvordruck/Rückantwort, Ausfüllen oder Unterschreiben des Leistungsverzeichnisses und reine Abgabeformalitäten. Personalqualifikationen zählen auch innerhalb des Leistungsverzeichnisses, wenn ein Nachweis der Fachkunde oder Qualifikation ausdrücklich verlangt wird (z.B. Probenehmer muss Fachkunde nachweisen); allgemeine Formulierungen wie \"durch fachkundiges Personal auszuführen\" ohne Nachweispflicht zählen nicht.
 Wenn die Unterlagen keine solchen Eignungsanforderungen enthalten, gib eine leere Liste aus. Ein Leistungsverzeichnis enthält meist keine; nichts auffüllen und nichts ableiten.
 is_critical (Ausschlusskriterium) nur true, wenn der Quelltext ausdrücklich den Ausschluss bzw. die Nichtberücksichtigung des Angebots bei Fehlen anordnet, die Anforderung ausdrücklich als Mindestanforderung an die Eignung bezeichnet, oder es sich um einen gesetzlichen Ausschlussgrund handelt (Eigenerklärung zur Eignung/Präqualifikation, Sanktions-/Russland-Erklärung, Mindestlohn/Tariftreue/Mindestarbeitsbedingungen). Sonst false.
-Jeder Eintrag muss source_refs mit mindestens einer tatsächlich bereitgestellten SOURCE_BLOCK_ID enthalten, z.B. ["S000001"]. Wähle die Quellblöcke, die den gesamten Inhalt einschließlich einer eventuellen Ausschlussfolge belegen. Niemals Zitate, Marker oder IDs selbst erzeugen. Titel kurz, Beschreibung präzise mit Mindestwerten, Nachweisform und Bedingungen. Fasse identische Anforderungen zusammen. Maximal 25 requirements pro Teil. Das JSON-Objekt enthält nur requirements. evidence_kind nur certificate/insurance/reference/policy/form/other. certificate_catalogue_id nur bei certificate und passender Allowlist-ID, sonst null.`;
+Jeder Eintrag muss source_refs mit mindestens einer tatsächlich bereitgestellten SOURCE_BLOCK_ID enthalten, z.B. ["S000001"]. Wähle die Quellblöcke, die den gesamten Inhalt einschließlich einer eventuellen Ausschlussfolge belegen. Niemals Zitate, Marker oder IDs selbst erzeugen. Titel kurz, Beschreibung präzise mit Mindestwerten, Nachweisform und Bedingungen. Fasse identische Anforderungen zusammen. Maximal 40 requirements pro Teil. Das JSON-Objekt enthält nur requirements. evidence_kind nur certificate/insurance/reference/policy/form/other. certificate_catalogue_id nur bei certificate und passender Allowlist-ID, sonst null.`;
 const textSchema = { type: 'string' };
 const noteProperties = { title: textSchema, description: textSchema, source_refs: { type: 'array', description: 'IDs der bereitgestellten Quellblöcke, die diese Aussage vollständig belegen. Mehrere IDs für über Block-/Seitengrenzen fortgesetzte Klauseln. Keine selbst erzeugten Zitate.', items: { type: 'string', description: 'Eine vorhandene SOURCE_BLOCK_ID, z.B. S000001.' } } };
 const objectSchema = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, properties, required: Object.keys(properties) });
@@ -189,24 +189,27 @@ export function pdfRequirementChunks(source: string, limit = PDF_EXTRACTION_CHUN
   if (current) chunks.push(current);
   return chunks;
 }
-const formNumbers = (item: PdfNote) => [...new Set([...compact(item.title + ' ' + item.description).matchAll(/form(?:blatt|blätter|ular)?\s*(\d{3,4}(?:\.\w+)?)/gi)].map(m => m[1]))].sort().join(',');
-// Different chunks often cite the same tender form (e.g. 211 and 216 both list Formblatt 127);
-// collapse those into the first occurrence, keeping all source evidence.
+const formNumbers = (item: PdfNote) => [...new Set([...compact(item.title + ' ' + item.description).matchAll(/\bform(?:blatt|blätter|ular)?\s*(\d{3,4}[a-z]?(?:\.\w+)?)\b/gi)].map(m => m[1].toLowerCase()))].sort().join(',');
+const GENERIC = new Set(['erklärung', 'erklärungen', 'formblatt', 'abgabe', 'einreichung', 'vorlage', 'angebot', 'nachweis', 'nachweise', 'angaben', 'bezüglich', 'gemäß']);
+const titleTokens = (item: PdfNote) => new Set(compact(item.title).toLowerCase().split(/[^\p{L}\d]+/u).filter(t => t.length >= 5 && !GENERIC.has(t)));
+// Different chunks often cite the same tender form (e.g. 211 and 216 both list Formblatt 127).
+// Merge only items citing the same form set AND sharing a distinctive title word, so an
+// umbrella form (e.g. 124) never swallows a different requirement. All evidence is kept;
+// a critical item survives as the representative so its statutory title is retained.
 function mergeSameForm(items: PdfRequirement[]): PdfRequirement[] {
-  const byForm = new Map<string, PdfRequirement>();
   const out: PdfRequirement[] = [];
   for (const item of items) {
-    const key = formNumbers(item) && item.evidence_kind + ':' + formNumbers(item);
-    const first = key ? byForm.get(key) : undefined;
-    if (!first) { if (key) byForm.set(key, item); out.push(item); continue; }
-    first.source_fragments = [...new Set([...first.source_fragments, ...item.source_fragments])].sort().slice(0, 20);
-    first.is_critical ||= item.is_critical;
+    const forms = formNumbers(item), tokens = titleTokens(item);
+    const index = forms ? out.findIndex(o => o.evidence_kind === item.evidence_kind && formNumbers(o) === forms && [...titleTokens(o)].some(t => tokens.has(t))) : -1;
+    if (index < 0) { out.push(item); continue; }
+    const [keep, drop] = item.is_critical && !out[index].is_critical ? [item, out[index]] : [out[index], item];
+    out[index] = { ...keep, source_fragments: [...new Set([...keep.source_fragments, ...drop.source_fragments])].sort().slice(0, 20) };
   }
   return out;
 }
 export function mergePdfExtractions(extractions: PdfExtraction[]): PdfExtraction {
   const requirements = extractions.length > 1
-    ? canonical(mergeSameForm(canonical(extractions.flatMap(v => v.requirements), 'PDF-REQ-').map(v => ({ ...v }))), 'PDF-REQ-')
+    ? canonical(mergeSameForm(canonical(extractions.flatMap(v => v.requirements), 'PDF-REQ-')), 'PDF-REQ-')
     : canonical(extractions.flatMap(v => v.requirements), 'PDF-REQ-');
   return {
     requirements: requirements.slice(0, PDF_REQUIREMENT_LIMIT),
@@ -231,7 +234,7 @@ export async function extractPdfChunks(
       try {
         const chunk = chunks[index];
         const materialized = materializePdfSourceRefs(await extract(chunk.annotated), chunk.blocks);
-        outputs[index] = validatePdfExtraction(materialized, chunk.text, catalogue, 25);
+        outputs[index] = validatePdfExtraction(materialized, chunk.text, catalogue, PDF_REQUIREMENT_LIMIT);
       }
       catch (error) { failed = true; throw error; }
     }

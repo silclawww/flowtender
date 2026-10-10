@@ -341,6 +341,13 @@ test('cross-chunk items citing the same form merge with all evidence; statutory 
   assert.deepEqual(russia.source_fragments, ['[[SOURCE vhb.pdf PAGE 1]] A', '[[SOURCE vhb.pdf PAGE 9]] B']);
   assert.equal(russia.is_critical, true);
   assert.equal(mergePdfExtractions([{ requirements: [a, b] as any, output_limit_reached: false }]).requirements.length, 2);
+  // Umbrella form 124: different requirements citing the same form never merge.
+  const ref = { ...a, title: 'Referenznachweise', description: 'Gemäß Formblatt 124.', source_fragments: ['[[SOURCE vhb.pdf PAGE 2]] R'] };
+  const reg = { ...a, title: 'Gewerbeanmeldung', description: 'Gemäß Formblatt 124.', source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] G'] };
+  assert.equal(mergePdfExtractions([{ requirements: [ref] as any, output_limit_reached: false }, { requirements: [reg] as any, output_limit_reached: false }]).requirements.length, 2);
+  // A critical duplicate is kept as the representative.
+  const kept = mergePdfExtractions([{ requirements: [{ ...b, source_fragments: ['[[SOURCE vhb.pdf PAGE 1]] B'] }] as any, output_limit_reached: false }, { requirements: [{ ...a, source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] A'] }] as any, output_limit_reached: false }]).requirements;
+  assert.equal(kept.length, 1); assert.equal(kept[0].title, 'Erklärung Bezug Russland'); assert.equal(kept[0].is_critical, true);
   assert.equal(isStatutoryExclusionGround({ ...note(0), title: 'Referenznachweise', description: 'Angaben gemäß Formblatt Eigenerklärung zur Eignung' }), false);
   assert.equal(isStatutoryExclusionGround({ ...note(0), title: 'Eignungsnachweis ueber Praequalifikation', description: '' }), true);
 });
