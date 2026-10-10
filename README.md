@@ -283,6 +283,49 @@ GET /api/flow/health
 
 It returns only `{"status":"ok"}` and no execution or customer metadata.
 
+## PDF extraction snapshot deployment prerequisite
+
+Before enabling the PDF requirements workflow, provision its dedicated private
+Supabase Storage bucket using the existing server environment:
+
+```bash
+node --env-file=.env.local scripts/provision-pdf-extraction-cache.mjs
+```
+
+Required environment names are `NEXT_PUBLIC_SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY`. Supply them through protected server configuration;
+do not paste credentials into command arguments or commit an environment file.
+The script uses the supported Storage API, is idempotent, and touches bucket
+metadata only. It creates or corrects `pdf-extraction-cache` to `public: false`,
+maximum object size 1 MiB, and MIME allowlist `application/json`, then reads back
+and verifies those settings, including for an existing bucket. Output contains
+only those non-secret settings. It never reads or changes tenders or cache objects.
+
+This bucket is server/service-role only. Do not add anonymous or authenticated
+Storage policies granting access to it; existing broad Storage policies must also
+exclude it. Private bucket configuration alone does not supersede an existing
+permissive RLS policy. There is no database migration: administrative notes use
+existing tender JSON fields.
+
+The cache stores only validated PDF source extraction, not company eligibility,
+profile evidence, scores, decisions, or later evaluation. Keys include organization,
+normalized exact source (including source names/page markers), certificate catalogue,
+model, prompt/schema, and the policy version in `lib/ingestion/pdf-requirements.ts`.
+The current policy also fixes source-block and chunking rules. Change that version
+when changing extraction, validation, classification or chunking behavior. Such a
+change intentionally creates a new snapshot on the next run; never overwrite an
+existing snapshot. Changing filenames/source markers or catalogue also changes the
+key. Reuse is not a claim that independent model calls are deterministic.
+
+For the same key, subsequent uploads reuse the stored canonical requirements,
+source-backed deadline notes and document notes without another extraction call.
+Concurrent misses use atomic create: all callers return the first successfully
+persisted validated snapshot. Only a complete, validated chunk result is saved.
+Missing/unavailable Storage, invalid cached data, or persistence errors fail closed;
+they do not silently fall back to a fresh variable extraction result. A valid cache
+miss runs bounded extraction and saves its result. Normal company evaluation still
+runs afresh. GAEB continues through its existing route without this cache.
+
 ## License
 
 MIT
