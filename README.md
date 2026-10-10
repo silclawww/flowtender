@@ -320,7 +320,11 @@ key. Reuse is not a claim that independent model calls are deterministic.
 For the same key, subsequent uploads reuse the stored canonical requirements,
 source-backed deadline notes and document notes without another extraction call.
 Concurrent misses use atomic create: all callers return the first successfully
-persisted validated snapshot. Only a complete, validated chunk result is saved.
+persisted validated snapshot. Only a complete, validated chunk result is saved. The first two source pages
+are isolated from the remaining bounded chunks so introductory conditions retain
+their own context. Storage reads/publication use abortable requests bounded by
+15 seconds and the remaining workflow deadline; expired work cannot start a new
+extraction or publication.
 Missing/unavailable Storage, invalid cached data, or persistence errors fail closed;
 they do not silently fall back to a fresh variable extraction result. A valid cache
 miss runs bounded extraction and saves its result. Normal company evaluation still

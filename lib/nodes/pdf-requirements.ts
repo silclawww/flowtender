@@ -2,7 +2,7 @@ import type { NodeExecutor } from '../../types/execution.ts';
 import { httpRequestExecutor } from './http-request.ts';
 import { cachedPdfExtraction, createPdfExtractionCache, type PdfExtractionCache } from '../ingestion/pdf-extraction-cache.ts';
 import { extractPdfChunks, pdfExtractionKey, PDF_REQUIREMENTS_MODEL, PDF_REQUIREMENTS_PROMPT, PDF_REQUIREMENTS_SCHEMA } from '../ingestion/pdf-requirements.ts';
-import { NonRetryableError } from '../retry-errors.ts';
+import { NonRetryableError, WorkflowDeadlineError } from '../retry-errors.ts';
 
 export function createPdfRequirementsExecutor(
   cacheFactory: () => PdfExtractionCache = createPdfExtractionCache,
@@ -34,9 +34,10 @@ export function createPdfRequirementsExecutor(
           const content = response?.choices?.[0]?.message?.content;
           if (typeof content !== 'string') throw new Error('PDF_EXTRACTION_INVALID');
           try { return JSON.parse(content); } catch { throw new Error('PDF_EXTRACTION_INVALID'); }
-        }));
+        }), runtime);
         return [[{ json: { pdf_extraction: extraction } }]];
       } catch (error) {
+        if (error instanceof WorkflowDeadlineError) throw error;
         // Never regenerate silently when persistence or cached validation fails.
         const message = error instanceof Error && /^PDF_EXTRACTION_[A-Z_]+$/.test(error.message) ? error.message : 'PDF_EXTRACTION_FAILED';
         throw new NonRetryableError(message);

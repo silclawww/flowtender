@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { pdfSourceBlocks, materializePdfSourceRefs, extractPdfChunks, pdfRequirementChunks, mergePdfExtractions, validatePdfExtraction, pdfExtractionKey, administrativeKind, type PdfNote } from '../lib/ingestion/pdf-requirements.ts';
-import { cachedPdfExtraction, type PdfExtractionCache } from '../lib/ingestion/pdf-extraction-cache.ts';
+import { boundedPdfCacheOperation, createPdfExtractionCache, cachedPdfExtraction, type PdfExtractionCache } from '../lib/ingestion/pdf-extraction-cache.ts';
 import { createPdfRequirementsExecutor } from '../lib/nodes/pdf-requirements.ts';
+import { WorkflowDeadlineError } from '../lib/retry-errors.ts';
 import type { ExecutionContext, NodeExecutor } from '../types/execution.ts';
 const org = '8218c886-b279-4c30-a408-79acf74f537b';
 const catalogue = { version: 1, entries: [{ id: 'iso9001' }] };
@@ -226,4 +227,57 @@ test('unrecognized administrative wording is not evidence of a technical require
   assert.equal(result.deadlines.length, 2);
   assert.ok(result.deadlines.some(v => v.kind === 'binding'));
   assert.ok(result.deadlines.some(v => v.kind === 'submission_method'));
+});
+test('the first two physical pages are isolated from subsequent LV pages', () => {
+  const original = [1, 2, 3, 4].map(page => `[[SOURCE tender.pdf PAGE ${page}]]\nOriginal contents of page ${page}.`).join('\n');
+  const chunks = pdfRequirementChunks(original);
+  assert.equal(chunks.length, 2);
+  assert.match(chunks[0], /PAGE 1/); assert.match(chunks[0], /PAGE 2/); assert.doesNotMatch(chunks[0], /PAGE 3/);
+  assert.match(chunks[1], /PAGE 3/); assert.match(chunks[1], /PAGE 4/);
+});
+test('expired cache runtime prevents reads, extraction and creates; extraction overrun prevents publish', async () => {
+  let reads = 0, extracts = 0, writes = 0;
+  const cache: PdfExtractionCache = { async read() { reads++; return null; }, async create() { writes++; return 'created'; } };
+  await assert.rejects(cachedPdfExtraction(cache, 'key', source, catalogue, async () => { extracts++; return raw(); }, { deadline: Date.now() - 1 }), WorkflowDeadlineError);
+  assert.deepEqual([reads, extracts, writes], [0, 0, 0]);
+  await assert.rejects(cachedPdfExtraction(cache, 'key', source, catalogue, async () => { extracts++; await new Promise(resolve => setTimeout(resolve, 20)); return raw(); }, { deadline: Date.now() + 5 }), WorkflowDeadlineError);
+  assert.deepEqual([reads, extracts, writes], [1, 1, 0]);
+});
+test('stalled cache operations abort within independent timeout and preserve workflow deadline errors', async () => {
+  let aborted = false;
+  const stalled = (signal: AbortSignal) => new Promise<never>((_, reject) => signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true }));
+  await assert.rejects(boundedPdfCacheOperation(stalled, undefined, 5), /PDF_EXTRACTION_CACHE_TIMEOUT/);
+  assert.equal(aborted, true); aborted = false;
+  await assert.rejects(boundedPdfCacheOperation(stalled, { deadline: Date.now() + 5 }), WorkflowDeadlineError);
+  assert.equal(aborted, true);
+});
+test('dedicated Storage fetch receives abort for read and publish without a background continuation', async () => {
+  const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL, previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://cache-test.invalid'; process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-not-a-credential';
+  try {
+    let calls = 0, aborted = 0;
+    const cache = createPdfExtractionCache(async (_input, init) => {
+      calls++;
+      return new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => { aborted++; reject(init!.signal!.reason); }, { once: true }));
+    });
+    await assert.rejects(boundedPdfCacheOperation(signal => cache.read('org/key.json', signal), undefined, 10), /CACHE_TIMEOUT/);
+    await assert.rejects(boundedPdfCacheOperation(signal => cache.create('org/key.json', {}, signal), undefined, 10), /CACHE_TIMEOUT/);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(calls, 2); assert.equal(aborted, 2);
+  } finally {
+    if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+    if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
+  }
+});
+test('conflict winner reads also honor the workflow deadline', async () => {
+  let reads = 0, aborted = false;
+  const cache: PdfExtractionCache = {
+    async read(_key, signal) {
+      reads++; if (reads === 1) return null;
+      return new Promise<never>((_, reject) => signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true }));
+    },
+    async create() { return 'conflict'; },
+  };
+  await assert.rejects(cachedPdfExtraction(cache, 'key', source, catalogue, async () => raw(), { deadline: Date.now() + 15 }), WorkflowDeadlineError);
+  assert.equal(reads, 2); assert.equal(aborted, true);
 });

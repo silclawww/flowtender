@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const PDF_REQUIREMENTS_VERSION = 'pdf-requirements-v7-bidirectional-final50';
+export const PDF_REQUIREMENTS_VERSION = 'pdf-requirements-v8-intro2-final50';
 export const PDF_REQUIREMENT_LIMIT = 50;
 export const PDF_REQUIREMENTS_MODEL = 'gemini-3.5-flash-lite';
 export const DEADLINE_KINDS = ['submission', 'binding', 'execution', 'submission_method'] as const;
@@ -131,10 +131,24 @@ export function validatePdfExtraction(raw: unknown, source: string, catalogue: u
 export const PDF_EXTRACTION_CHUNK_CHARS = 50_000;
 // Preserve whole source pages where possible; unusually long pages are split with
 // their original marker repeated so every chunk still has verifiable citations.
-export function pdfRequirementChunks(source: string, limit = PDF_EXTRACTION_CHUNK_CHARS): string[] {
+export function pdfRequirementChunks(source: string, limit = PDF_EXTRACTION_CHUNK_CHARS, isolateIntroduction = true): string[] {
   if (limit < 1000) throw new Error('PDF_EXTRACTION_CHUNK_INVALID');
   const markers = [...source.matchAll(/\[\[SOURCE [^\]\n]{1,500} PAGE \d+\]\]/g)];
   if (markers.length === 0) throw new Error('PDF_EXTRACTION_SOURCE_INVALID');
+  if (isolateIntroduction) {
+    const pages = new Set<string>();
+    for (const marker of markers) {
+      pages.add(marker[0]);
+      if (pages.size > 2) {
+        // Tender introductions/commercial terms get their own bounded context,
+        // rather than competing with a long subsequent bill of quantities.
+        return [
+          ...pdfRequirementChunks(source.slice(0, marker.index), limit, false),
+          ...pdfRequirementChunks(source.slice(marker.index), limit, false),
+        ];
+      }
+    }
+  }
   const pieces: string[] = [];
   const preamble = source.slice(0, markers[0].index).trim();
   if (preamble) {
