@@ -13,7 +13,10 @@ export function extractPdfPositions(pages: PdfPage[], recognizedDepths?: Set<num
   let current: typeof blocks[number] | undefined;
   const quantities = /^\s*((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?)\s+([\p{L}\d²³/%.-]+)\s+\.{4,}/u;
   let orphanRows = 0;
+  let previousSource: string | undefined;
   for (const page of pages) {
+    if (page.source_file !== previousSource) current = undefined;
+    previousSource = page.source_file;
     for (const line of page.text.split(/\r?\n/)) {
       // At least two OZ components; arbitrary hierarchy depth. TOC leaders are not rows.
       const heading = /^\s*(\d+(?:\.\d+)+)\.?\s+(.+?)\s*$/.exec(line);
@@ -36,9 +39,9 @@ export function extractPdfPositions(pages: PdfPage[], recognizedDepths?: Set<num
   const parentIds = new Set<string>();
   for (const b of blocks) {
     const parts = b.id.split('.');
-    for (let depth = 1; depth < parts.length; depth++) parentIds.add(parts.slice(0, depth).join('.'));
+    for (let depth = 1; depth < parts.length; depth++) parentIds.add(JSON.stringify([b.source_file || null, parts.slice(0, depth).join('.')]));
   }
-  const candidates = blocks.filter(b => !parentIds.has(b.id));
+  const candidates = blocks.filter(b => !parentIds.has(JSON.stringify([b.source_file || null, b.id])));
   const counts = new Map<string, number>();
   for (const b of candidates) counts.set(b.id, (counts.get(b.id) || 0) + 1);
   let ambiguous = 0;

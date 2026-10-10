@@ -60,3 +60,28 @@ test('metadata preserves subsidiary date ambiguity and rejects invalid or confli
   assert.equal(conflict.project_id,null);
   assert.equal(conflict.conflicting_project_ids.length,2);
 });
+
+test('a new source file cannot supply the previous file’s missing quantity', () => {
+  const r=extractPdfPositions([
+    {num:1,source_file:'lv-a.pdf',text:'1.10. Unresolved earthworks'},
+    {num:1,source_file:'lv-b.pdf',text:'999,000 m3 ........'},
+  ]);
+  assert.equal(r.positions[0].quantity,null);
+  assert.equal(r.positions[0].source_file,'lv-a.pdf');
+  assert.equal(r.coverage.orphan_quantity_rows,1);
+  assert.equal(r.coverage.status,'incomplete');
+});
+
+test('hierarchy inference never drops another file’s leaf; duplicate IDs stay ambiguous', () => {
+  const r=extractPdfPositions([
+    {num:1,source_file:'a.pdf',text:'1.10. A\n1,000 m ........'},
+    {num:1,source_file:'b.pdf',text:'1.10.10. B\n2,000 m ........'},
+  ]);
+  assert.equal(r.positions.length,2);
+  const duplicate=extractPdfPositions([
+    {num:1,source_file:'a.pdf',text:'1.10. A\n1,000 m ........'},
+    {num:1,source_file:'b.pdf',text:'1.10. B\n2,000 m ........'},
+  ]);
+  assert.equal(duplicate.coverage.status,'ambiguous');
+  assert.ok(duplicate.positions.every(p=>p.quantity===null));
+});
