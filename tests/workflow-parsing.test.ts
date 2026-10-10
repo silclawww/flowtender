@@ -3246,3 +3246,17 @@ test('stage 2 requests strict chunk-local classification and group schemas witho
     }
   }
 });
+
+test('PDF evaluation accepts 30 canonical requirements while GAEB keeps its 25 limit', async () => {
+  const requirements = Array.from({ length: 30 }, (_, index) => ({ ...validRequirement, id: `PDF-REQ-${index}`, is_critical: false }));
+  const evaluation = { ...allCompliantEvaluation, eligibility_requirements: requirements.map(requirement => ({ id: requirement.id, status: 'compliant', is_blocking: false })).reverse() };
+  const context: ExecutionContext = new Map([
+    ['load-requirements', [{ json: { id: 'tender-id', source_type: 'pdf', requirements, requirements_coverage: { ...completeRequirementsCoverage(30), requirement_limit: 50 } } }]],
+    ['geocode-distance', [{ json: { distance_km: null, distance_note: null } }]],
+  ]);
+  const parsed = await codeExecutor.execute({ code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') }, [{ json: llmResponse(evaluation) }], context);
+  assert.deepEqual((parsed[0][0].json.eligibility_requirements as Array<{id: string}>).map(item => item.id), requirements.map(item => item.id));
+  assert.equal(parsed[0][0].json.recommendation_guard, undefined);
+  context.get('load-requirements')![0].json.source_type = 'gaeb';
+  await assert.rejects(codeExecutor.execute({ code: workflowCode('tender-stage3-evaluation.json', 'parse-evaluation') }, [{ json: llmResponse(evaluation) }], context), /LLM_RESPONSE_INVALID_JSON/);
+});
