@@ -17,7 +17,7 @@
       "name": "Load Requirements",
       "config": {
         "table": "tenders",
-        "select": "id, requirements, requirements_coverage, eligibility_requirements, region, value_breakdown, item_count",
+        "select": "id, requirements, requirements_coverage, eligibility_requirements, region, value_breakdown, item_count, source_type, raw_gaeb_json",
         "filters": [
           {
             "column": "id",
@@ -151,7 +151,7 @@
       "type": "code",
       "name": "Finalize Evaluation",
       "config": {
-        "code": "const tender = $('load-requirements').first().json;\nconst evaluation = tender.item_count === 0\n  ? { ...$json, strategic_fit_score: null, bid_recommendation: 'incomplete' }\n  : $json;\nreturn [{ json: evaluation }];"
+        "code": "const tender = $('load-requirements').first().json;\nconst pdfCoverage = Array.isArray(tender.raw_gaeb_json) ? tender.raw_gaeb_json.find(g => g?.pdf_extraction)?.pdf_extraction : null;\nconst incomplete = !Number.isFinite(tender.item_count) || tender.item_count <= 0 || (tender.source_type === 'pdf' && pdfCoverage?.status !== 'pattern_matched');\nconst evaluation = incomplete\n  ? { ...$json, strategic_fit_score: null, bid_recommendation: 'incomplete' }\n  : tender.source_type === 'pdf' && tender.requirements_coverage?.source_insufficient === true\n    ? {...$json, bid_recommendation:'needs_review', recommendation_guard:'source_coverage'}\n    : $json;\nreturn [{ json: evaluation }];"
       }
     },
     {

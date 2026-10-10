@@ -492,6 +492,10 @@ test('stage 1 PDF preserves valid metadata and source fields', async () => {
     category: validPdfMetadata.category,
     tendertype: validPdfMetadata.tender_type,
     source_type: 'pdf',
+    gaeb_positions: [],
+    item_count: 0,
+    raw_gaeb_json: [{source_type: 'pdf', pdf_extraction: {status: 'unsupported', verified_complete: false}, source_metadata: {}}],
+    execution_start: null, execution_end: null, bindefrist_datum: null, vergabenummer: null,
     source_filename: 'ausschreibung.pdf',
     pdf_text: 'Extracted PDF text',
     page_count: 12,
@@ -3158,4 +3162,24 @@ test('stage 3 normalizes nested JSON strings and preserves a valid evaluation wi
     distance_km: 47.5,
     distance_note: '47,5 km zum Bauort',
   } }]]);
+});
+
+test('PDF archive text requires real source markers and retains PDF-derived rows', async () => {
+  const code=workflowCode('tender-stage1-pdf.json','extract-text');
+  const result=await codeExecutor.execute({code},[{json:{pdf_texts:{'one':'[[SOURCE mixed.pdf PAGE 3]]\n1.10. Boden\n2,000 m3 ........'}}}],new Map());
+  assert.equal((result[0][0].json.pdf_extracted as {positions:unknown[]}).positions.length,1);
+  assert.match(String(result[0][0].json.pdf_text),/SOURCE mixed.pdf PAGE 3/);
+  await assert.rejects(codeExecutor.execute({code},[{json:{pdf_texts:{one:'Text without page evidence'}}}],new Map()),/PDF_SOURCE_REFERENCES_REQUIRED/);
+});
+
+test('PDF incomplete, unknown workload and ungrounded sources cannot yield confident bids', async () => {
+  const code=workflowCode('tender-stage3-evaluation.json','finalize-evaluation');
+  for (const count of [undefined,null,0]) {
+    const context:ExecutionContext=new Map([['load-requirements',[{json:{item_count:count}}]]]);
+    const r=await codeExecutor.execute({code},[{json:{bid_recommendation:'recommend_bid',strategic_fit_score:90}}],context);
+    assert.equal(r[0][0].json.bid_recommendation,'incomplete');
+  }
+  const context:ExecutionContext=new Map([['load-requirements',[{json:{item_count:2,source_type:'pdf',raw_gaeb_json:[{pdf_extraction:{status:'pattern_matched'}}],requirements_coverage:{source_insufficient:true}}}]]]);
+  const r=await codeExecutor.execute({code},[{json:{bid_recommendation:'recommend_no_bid'}}],context);
+  assert.equal(r[0][0].json.bid_recommendation,'needs_review');
 });

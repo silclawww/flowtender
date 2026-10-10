@@ -4,6 +4,7 @@ import * as util from 'node:util';
 import * as zlib from 'node:zlib';
 
 import '@napi-rs/canvas';
+import * as pdfPositions from '../ingestion/pdf-positions.ts';
 import * as pdfParse from 'pdf-parse';
 import { getPath as getPdfWorkerPath } from 'pdf-parse/worker';
 
@@ -18,6 +19,7 @@ const ALLOWED_MODULES = new Map<string, object>([
   ['path', path],
   ['zlib', zlib],
   ['pdf-parse', pdfParse],
+  ['tenderly-pdf-text', pdfPositions],
 ]);
 
 export const codeExecutor: NodeExecutor = {
