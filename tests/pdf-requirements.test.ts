@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { extractPdfChunks, pdfRequirementChunks, mergePdfExtractions, validatePdfExtraction, pdfExtractionKey, administrativeKind, type PdfNote } from '../lib/ingestion/pdf-requirements.ts';
+import { pdfSourceBlocks, materializePdfSourceRefs, extractPdfChunks, pdfRequirementChunks, mergePdfExtractions, validatePdfExtraction, pdfExtractionKey, administrativeKind, type PdfNote } from '../lib/ingestion/pdf-requirements.ts';
 import { cachedPdfExtraction, type PdfExtractionCache } from '../lib/ingestion/pdf-extraction-cache.ts';
 import { createPdfRequirementsExecutor } from '../lib/nodes/pdf-requirements.ts';
 import type { ExecutionContext, NodeExecutor } from '../types/execution.ts';
@@ -36,6 +36,8 @@ test('pure logistics route out; qualification in form and technical waiting peri
   assert.equal(administrativeKind({ ...note(0), title: 'Festpreise', description: 'Festpreise für die gesamte Bauzeit.' }), null);
   assert.equal(administrativeKind({ ...note(0), title: 'Rückantwortformblatt bei Angebotsabgabe', description: 'Rückantwortformblatt ist bei Angebotsabgabe einzureichen.' }), 'document');
   assert.equal(administrativeKind({ ...note(0), title: 'Angebotsfrist im Formblatt', description: 'Angebotsfrist laut Formblatt: bis 16.10.' }), 'submission');
+  assert.equal(administrativeKind({ ...note(0), title: 'Beschichtung', description: 'Beschichtung gemäß Formblatt dreilagig' }), null);
+  assert.equal(administrativeKind({ ...note(0), title: 'Schweißarbeiten', description: 'Schweißarbeiten gemäß Vordruck' }), null);
 });
 test('quotes must come from stated page and cannot be paraphrased; implicit and invalid catalogue rejected', () => {
   for (const fragment of ['[[SOURCE tender.pdf PAGE 2]] ' + lines[4], '[[SOURCE invented.pdf PAGE 1]] ' + lines[4], '[[SOURCE tender.pdf PAGE 1]] ISO 9001 ist optional.']) {
@@ -86,7 +88,7 @@ test('GAEB delegates exact config and inputs; PDF single strict call then cache 
     if (actual.body === 'legacy') { assert.equal(actual, config); assert.equal(input, inputs); return [[{ json: { original: true } }]]; }
     const body = input[0].json.pdf_extraction_request as Record<string, unknown>;
     assert.equal(body.temperature, 0); assert.equal((body.response_format as Record<string, unknown>).type, 'json_schema');
-    return [[{ json: { choices: [{ message: { content: JSON.stringify(raw()) } }] } }]];
+    return [[{ json: { choices: [{ message: { content: JSON.stringify({ ...raw(), requirements: raw().requirements.map(({source_fragments: _fragments, ...item}) => ({ ...item, source_refs: ['S000001'] })) }) } }] } }]];
   } };
   const executor = createPdfRequirementsExecutor(() => memory, http), memory = memoryCache();
   assert.deepEqual(await executor.execute(config, inputs, new Map()), [[{ json: { original: true } }]]);
@@ -145,8 +147,8 @@ test('chunk extraction collects every result with concurrency2 and sorts pages n
   const result = await extractPdfChunks(pages.join('\n'), catalogue, async chunk => {
     active++; peak = Math.max(peak, active); calls++;
     await new Promise(resolve => setTimeout(resolve, 1)); active--;
-    const marker = chunk.match(/\[\[SOURCE[^\]]+\]\]/)![0];
-    return { requirements: [{ ...req(4), source_fragments: [marker + ' ISO 9001 ist erforderlich.'] }], deadlines: [], documents: [] };
+    const refs = [...chunk.matchAll(/SOURCE_BLOCK_ID: (S\d+)/g)].map(match => match[1]);
+    return { requirements: [{ ...req(4), source_refs: [refs[refs.length - 1]] }], deadlines: [], documents: [] };
   }, 2000);
   assert.equal(calls, 3); assert.equal(peak, 2); assert.equal(result.requirements.length, 3);
   assert.deepEqual(result.requirements.map(v => Number(v.source_fragments[0].match(/PAGE (\d+)/)![1])), [1, 2, 11]);
@@ -164,4 +166,27 @@ test('merged chunk outputs deduplicate exact content and flag deterministic over
   const many = Array.from({ length: 30 }, (_, index) => validatePdfExtraction({ ...raw(), requirements: [{ ...req(4), title: 'Qualification ' + index }] }, source, catalogue));
   const first = mergePdfExtractions(many), reversed = mergePdfExtractions([...many].reverse());
   assert.equal(first.requirements.length, 25); assert.equal(first.output_limit_reached, true); assert.deepEqual(first, reversed);
+});
+test('source block IDs materialize original multipage excerpts and retain split-word spelling', () => {
+  const original = '[[SOURCE tender.pdf PAGE 16]]\nDie Prüfzeugnisse für Wasserbausteine sind\n[[SOURCE tender.pdf PAGE 17]]\nvor dem Einbau vorzulegen.\n[[SOURCE tender.pdf PAGE 21]]\nDie Geokunst-\nstoffen sind zu prüfen.';
+  const blocks = pdfSourceBlocks(original);
+  assert.equal(blocks.length, 3);
+  const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [blocks[0].ref, blocks[1].ref, blocks[2].ref] }], deadlines: [], documents: [] }, blocks);
+  const value = validatePdfExtraction(materialized, original, catalogue);
+  assert.equal(value.requirements[0].source_fragments.length, 3);
+  assert.ok(value.requirements[0].source_fragments.some(fragment => fragment.includes('Geokunst- stoffen')));
+  assert.ok(value.requirements[0].source_fragments.some(fragment => fragment.includes('PAGE 17')));
+  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: ['S999999'] }], deadlines: [], documents: [] }, blocks), /PDF_EXTRACTION_INVALID/);
+  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [] }], deadlines: [], documents: [] }, blocks), /PDF_EXTRACTION_INVALID/);
+});
+test('long source blocks remain bounded and stable without cross-page concatenation', () => {
+  const original = '[[SOURCE tender.pdf PAGE 1]]\n' + 'A sentence with original wording.\n'.repeat(100) + '[[SOURCE tender.pdf PAGE 2]]\nA different page original sentence.';
+  const blocks = pdfSourceBlocks(original);
+  assert.deepEqual(blocks, pdfSourceBlocks(original));
+  assert.equal(new Set(blocks.map(v => v.ref)).size, blocks.length);
+  assert.ok(blocks.every(v => v.fragment.length <= 1050));
+  for (const block of blocks) {
+    const materialized = materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: [block.ref] }], deadlines: [], documents: [] }, blocks);
+    assert.doesNotThrow(() => validatePdfExtraction(materialized, original, catalogue));
+  }
 });

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const PDF_REQUIREMENTS_VERSION = 'pdf-requirements-v4-chunks50000-c2';
+export const PDF_REQUIREMENTS_VERSION = 'pdf-requirements-v5-blocks1000-chunks50000-c2';
 export const PDF_REQUIREMENTS_MODEL = 'gemini-3.5-flash-lite';
 export const DEADLINE_KINDS = ['submission', 'binding', 'execution', 'submission_method'] as const;
 const CATEGORIES = ['Zertifizierung', 'Versicherung', 'Referenz', 'Personal', 'Ausrüstung', 'Sicherheit', 'Finanziell', 'Tariflich', 'Erlaubnis', 'Sonstiges'];
@@ -18,9 +18,9 @@ requirements: nur materielle Eignung, Mindestqualifikation, Versicherung, Refere
 deadlines: reine Angebotsabgabe/Einreichungsfrist (submission), Bindefrist (binding), gesamter Ausführungszeitraum/Beginn/Fertigstellung (execution), Einreichungsweg wie schriftlich/per E-Mail/elektronisch (submission_method). Diese gehören NICHT in requirements. Datumsangaben wörtlich erhalten; kein Jahr ergänzen, kein ISO-Datum erfinden. Widersprüchliche Angaben getrennt mit Quelle behalten.
 documents: reine Pflicht, ein Angebotsschreiben, Vordruck, Formblatt oder eine vergabespezifische Erklärung auszufüllen/einzureichen. Nur ausdrücklich verlangte oder angekreuzte Unterlagen, keine aus unmarkierten Formularlisten abgeleiteten Pflichten. Enthält eine Passage sowohl eine materielle Qualifikation als auch eine Einreichungsformalie, trenne sie und nenne in requirements nur den materiellen Inhalt.
 Vollständigkeitskontrolle vor der Ausgabe: Du erhältst einen zusammenhängenden Teil der Unterlagen; decke diesen Teil vollständig ab. Prüfe Einleitung/Angebotsaufforderung ebenso wie technische Vorbemerkungen. Bewahre ausdrücklich geforderte Festpreise/Preisbindung und ausdrücklich vereinbarte Vertragsbedingungen (z.B. VOB), vermessungstechnische Qualifikation, Materialzulassungen, Prüfzeugnisse, Labor-/Gütenachweise, Entsorgungs-/Umweltpflichten, Sicherheitsvorgaben und zeitliche technische Abhängigkeiten. Nicht nur drei Beispiele oder eine Zusammenfassung liefern; reine Positionsbeschreibungen bleiben ausgeschlossen.
-Jeder Eintrag braucht mindestens ein exaktes Zitat mit dem im Quelltext vorhandenen nächstgelegenen [[SOURCE Dateiname PAGE n]] Marker. source_fragments enthält IMMER Marker UND wörtlichen Text, NIEMALS nur einen Marker. Beispiel: "[[SOURCE Beispiel.pdf PAGE 1]] Die Preise sind Festpreise für die gesamte Bauzeit." (nur verwenden, wenn diese Worte tatsächlich auf der angegebenen Seite stehen). Zitate nicht paraphrasieren, keine Seiten erfinden. Titel kurz, Beschreibung präzise einschließlich ALLER Bedingungen, Klammerzusätze und Mindestwerte. Auch unsichere Kürzel wie (Sub: Datum) in der Beschreibung wörtlich erhalten und nicht interpretieren. Fasse identische Pflichten zusammen, ohne Bedingungen zu verlieren. Maximal25 requirements, je40 deadlines/documents. Gib alle klar belegten entscheidungsrelevanten Anforderungen wieder; keine Auffüllung bis zur Maximalzahl. evidence_kind nur certificate/insurance/reference/policy/form/other. certificate_catalogue_id nur bei certificate und passender Allowlist-ID, sonst null.`;
+Jeder Eintrag muss source_refs mit mindestens einer tatsächlich bereitgestellten SOURCE_BLOCK_ID enthalten, z.B. ["S000001"]. Wähle die Quellblöcke, die den gesamten Inhalt belegen. Bei einer über mehrere Blöcke oder Seiten fortgesetzten Klausel alle relevanten IDs aufnehmen. Niemals Zitate, Marker oder IDs selbst erzeugen. Die Originalzitate werden vom System aus den ausgewählten Blöcken übernommen. Titel kurz, Beschreibung präzise einschließlich ALLER Bedingungen, Klammerzusätze und Mindestwerte. Auch unsichere Kürzel wie (Sub: Datum) in der Beschreibung wörtlich erhalten und nicht interpretieren. Fasse identische Pflichten zusammen, ohne Bedingungen zu verlieren. Maximal25 requirements, je40 deadlines/documents. Gib alle klar belegten entscheidungsrelevanten Anforderungen wieder; keine Auffüllung bis zur Maximalzahl. evidence_kind nur certificate/insurance/reference/policy/form/other. certificate_catalogue_id nur bei certificate und passender Allowlist-ID, sonst null.`;
 const textSchema = { type: 'string' };
-const noteProperties = { title: textSchema, description: textSchema, source_fragments: { type: 'array', description: 'Mindestens ein exaktes Quellenzitat. Jedes Element enthält einen vorhandenen SOURCE/PAGE-Marker gefolgt vom wörtlichen Belegtext; ein Marker alleine ist ungültig.', items: { type: 'string', description: 'Beispielstruktur: [[SOURCE Dokument.pdf PAGE 1]] Exakter vollständiger Satz aus dieser Seite.' } } };
+const noteProperties = { title: textSchema, description: textSchema, source_refs: { type: 'array', description: 'IDs der bereitgestellten Quellblöcke, die diese Aussage vollständig belegen. Mehrere IDs für über Block-/Seitengrenzen fortgesetzte Klauseln. Keine selbst erzeugten Zitate.', items: { type: 'string', description: 'Eine vorhandene SOURCE_BLOCK_ID, z.B. S000001.' } } };
 const objectSchema = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, properties, required: Object.keys(properties) });
 export const PDF_REQUIREMENTS_SCHEMA = objectSchema({
   requirements: { type: 'array', items: objectSchema({ ...noteProperties, category: { type: 'string', enum: CATEGORIES }, is_critical: { type: 'boolean' }, is_implicit: { type: 'boolean', enum: [false] }, evidence_kind: { type: 'string', enum: EVIDENCE }, certificate_catalogue_id: { type: ['string', 'null'] } }) },
@@ -72,7 +72,7 @@ export function administrativeKind(item: PdfNote): PdfDeadline['kind'] | 'docume
   if (/angebotsfrist|abgabefrist|einreichungsfrist|submission|angebot.{0,35}(bis|frist|abgabe)|abgabe.{0,35}angebot/.test(text)) return 'submission';
   if (/ausführungs(zeitraum|frist|beginn|ende)|baubeginn|bauende|fertigstellung(stermin)?|bauzeit/.test(text)) return 'execution';
   if (/schriftlich|per e-mail|elektronisch|einreichungs(form|weg)|abgabeform/.test(text)) return 'submission_method';
-  if (/formblatt|vordruck|angebotsschreiben|einzureichende unterlagen/.test(text)) return 'document';
+  if (/einzureichende unterlagen/.test(text)) return 'document';
   return null;
 }
 function canonical<T extends PdfNote>(items: T[], prefix: string): T[] {
@@ -158,14 +158,23 @@ export function mergePdfExtractions(extractions: PdfExtraction[]): PdfExtraction
 export async function extractPdfChunks(
   source: string, catalogue: unknown, extract: (chunk: string) => Promise<unknown>, limit = PDF_EXTRACTION_CHUNK_CHARS,
 ): Promise<PdfExtraction> {
-  const chunks = pdfRequirementChunks(source, limit);
+  let nextRef = 1;
+  const chunks = pdfRequirementChunks(source, limit).map(text => {
+    const blocks = pdfSourceBlocks(text, nextRef);
+    nextRef += blocks.length;
+    return { text, blocks, annotated: blocks.map(block => 'SOURCE_BLOCK_ID: ' + block.ref + '\n' + block.fragment).join('\n\n') };
+  });
   const outputs: PdfExtraction[] = new Array(chunks.length);
   let cursor = 0;
   let failed = false;
   const worker = async () => {
     while (!failed && cursor < chunks.length) {
       const index = cursor++;
-      try { outputs[index] = validatePdfExtraction(await extract(chunks[index]), chunks[index], catalogue); }
+      try {
+        const chunk = chunks[index];
+        const materialized = materializePdfSourceRefs(await extract(chunk.annotated), chunk.blocks);
+        outputs[index] = validatePdfExtraction(materialized, chunk.text, catalogue);
+      }
       catch (error) { failed = true; throw error; }
     }
   };
@@ -173,4 +182,47 @@ export async function extractPdfChunks(
   const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (rejected) throw rejected.reason;
   return mergePdfExtractions(outputs);
+}
+
+export interface PdfSourceBlock { ref: string; fragment: string }
+export function pdfSourceBlocks(source: string, startRef = 1): PdfSourceBlock[] {
+  const markers = [...source.matchAll(/\[\[SOURCE [^\]\n]{1,500} PAGE \d+\]\]/g)];
+  const blocks: PdfSourceBlock[] = [];
+  for (let index = 0; index < markers.length; index++) {
+    const marker = markers[index][0];
+    let body = source.slice(markers[index].index! + marker.length, markers[index + 1]?.index ?? source.length).trim();
+    while (body) {
+      let end = Math.min(body.length, 1000);
+      if (end < body.length) {
+        const newline = body.lastIndexOf('\n', end);
+        const space = body.lastIndexOf(' ', end);
+        if (newline > 500) end = newline;
+        else if (space > 500) end = space;
+      }
+      const excerpt = body.slice(0, end).trim();
+      if (excerpt.length >= 8) blocks.push({ ref: 'S' + String(startRef + blocks.length).padStart(6, '0'), fragment: marker + ' ' + excerpt });
+      body = body.slice(end).trim();
+    }
+  }
+  if (!blocks.length) throw new Error('PDF_EXTRACTION_SOURCE_INVALID');
+  return blocks;
+}
+export function materializePdfSourceRefs(raw: unknown, blocks: PdfSourceBlock[]): Record<string, unknown> {
+  const data = obj(raw);
+  const byRef = new Map(blocks.map(block => [block.ref, block.fragment]));
+  const output: Record<string, unknown> = {};
+  for (const key of ['requirements', 'deadlines', 'documents']) {
+    if (!Array.isArray(data[key])) fail();
+    output[key] = (data[key] as unknown[]).map(rawItem => {
+      const item = obj(rawItem);
+      if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.length > 20) fail();
+      const fragments = (item.source_refs as unknown[]).map(ref => {
+        if (typeof ref !== 'string' || !byRef.has(ref)) return fail();
+        return byRef.get(ref)!;
+      });
+      const { source_refs: _refs, ...fields } = item;
+      return { ...fields, source_fragments: fragments };
+    });
+  }
+  return output;
 }
