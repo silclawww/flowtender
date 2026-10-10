@@ -307,12 +307,20 @@ exclude it. Private bucket configuration alone does not supersede an existing
 permissive RLS policy. There is no database migration. PDF extraction persists only requirements and
 coverage through the existing fields; stage1 deadline/execution metadata is unchanged.
 No new administrative dates, submission-method or document notes are extracted or saved.
-PDF requirements are bidder qualification only (prequalification/self-declaration,
-references, company certificates and registrations, insurance, staff qualifications,
-economic/technical capacity). Bill-of-quantities execution specs, material/product
-proofs, contract and price terms are not extracted; an LV-only PDF may legitimately
-yield an empty list. `is_critical` (exclusion criterion) is only kept when the cited
-source states an exclusion consequence or a minimum eligibility standard.
+PDF requirements follow the reviewed GAEB calibration: bidder qualification
+(prequalification/self-declaration, references, company certificates and
+registrations, insurance, staff qualifications, economic/technical capacity) plus
+the bidder's own tender declarations (minimum wage/collective terms, sanctions,
+child labour, subcontractor/joint-bidder/capacity-lending, register/VAT details,
+clearance certificates, pricing documents and other explicitly requested
+declarations). Bill-of-quantities execution specs, material/product proofs,
+contract and price terms, deadlines, submission method and offer forms are not
+extracted; an LV-only PDF may legitimately yield an empty list. `is_critical`
+(exclusion criterion) is kept only when the cited source states an offer/bidder
+exclusion consequence or a minimum eligibility standard, or the item title is a
+statutory exclusion ground (self-declaration/PQ, sanctions, minimum wage/collective
+terms). Sources up to 150k characters are extracted in one call; longer sources are
+chunked and cross-chunk items citing the same form number are merged.
 
 The cache stores only validated PDF source extraction, not company eligibility,
 profile evidence, scores, decisions, or later evaluation. Keys include organization,
