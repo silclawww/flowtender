@@ -3207,3 +3207,42 @@ test('GAEB 2000 context preserves deadline semantics, generic PDF evidence and z
   assert.doesNotMatch(output._gaeb_context, /Uhrzeit.*00:00/);
   assert.match(output._gaeb_context, /supporting document/);
 });
+
+test('stage 2 requests strict chunk-local classification and group schemas without relaxing semantic validation', async () => {
+  for (const rules of [[], [{ id: 'own-earth', work_type: 'Erdbau', outcome: 'own' }]]) {
+    const positions = Array.from({ length: 121 }, (_, i) => ({ id: String(i), short_text: 'Erdbau', unit: 'm3', category_path: [] }));
+    const context: ExecutionContext = new Map([
+      ['load-tender', [{ json: { gaeb_positions: positions } }]],
+      ['load-company-profile', [{ json: { subcontracting_rules: rules } }]],
+    ]);
+    const [chunks] = await codeExecutor.execute(
+      { code: workflowCode('tender-stage2-requirements.json', 'prepare-workload-chunks') }, [{ json: {} }], context,
+    );
+    for (const [index, chunk] of chunks.entries()) {
+      const body = chunk.json.request_body as Record<string, any>;
+      const format = body.response_format;
+      assert.equal(format.type, 'json_schema');
+      assert.equal(format.json_schema.strict, true);
+      const schema = format.json_schema.schema;
+      assert.equal(schema.additionalProperties, false);
+      assert.deepEqual(schema.required, ['classifications', 'groups']);
+      const ids = index === 0 ? Array.from({ length: 120 }, (_, i) => workloadClassificationKey(i)) : ['POS-121'];
+      const classification = schema.properties.classifications;
+      assert.equal(classification.minItems, undefined);
+      assert.equal(classification.maxItems, undefined);
+      assert.equal(classification.items.additionalProperties, false);
+      assert.deepEqual(classification.items.required, ['id', 'type', 'rule_id']);
+      assert.deepEqual(classification.items.properties.id.enum, ids);
+      assert.deepEqual(classification.items.properties.type.enum, ['eigen', 'fremd', 'liefer']);
+      assert.deepEqual(classification.items.properties.rule_id, rules.length
+        ? { anyOf: [{ type: 'string', enum: ['own-earth'] }, { type: 'null' }] } : { type: 'null' });
+      const group = schema.properties.groups.items;
+      assert.equal(group.additionalProperties, false);
+      assert.deepEqual(group.properties.position_ids.items.enum, ids);
+      assert.deepEqual(group.properties.kind.enum, ['semantic', 'ambiguous']);
+      assert.equal(group.properties.confidence.minimum, 0);
+      assert.equal(group.properties.confidence.maximum, 1);
+      assert.equal(body.temperature, 0);
+    }
+  }
+});
