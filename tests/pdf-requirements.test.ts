@@ -364,7 +364,8 @@ test('LV-only sources cite positions by OZ; execution conditions are grounded, s
   assert.equal(result.requirements.length, 0);
   assert.deepEqual(result.execution_conditions.map(c => c.title), ['Wasserschutzgebiet', 'DWA-Zulassung Schacht']); // LV order by OZ
   assert.ok(result.execution_conditions.every(c => c.id.startsWith('PDF-EXE-') && !('is_critical' in c)));
-  assert.throws(() => validatePdfExtraction({ requirements: [], execution_conditions: [{ title: 'X', description: 'Y', source_fragments: ['[[SOURCE LV.P83 OZ 09.99]] erfunden'] }] }, lv, catalogue), /PDF_EXTRACTION_INVALID/);
+  // An ungrounded condition is dropped, never cited and never fails the requirements.
+  assert.deepEqual(validatePdfExtraction({ requirements: [], execution_conditions: [{ title: 'X', description: 'Y', source_fragments: ['[[SOURCE LV.P83 OZ 09.99]] erfunden'] }] }, lv, catalogue).execution_conditions, []);
   assert.equal(pdfRequirementChunks(lv, 100_000).length, 1);
   // Older snapshots without the key still revalidate.
   assert.deepEqual(validatePdfExtraction({ requirements: [] }, lv, catalogue).execution_conditions, []);
@@ -401,4 +402,27 @@ test('LV-only GAEB uploads get OZ-cited full position texts and the qualificatio
   const extraction = (out[0][0].json as { pdf_extraction: { execution_conditions: { title: string; source_fragments: string[] }[] } }).pdf_extraction;
   assert.equal(extraction.execution_conditions[0].title, 'DWA-Zulassung');
   assert.match(extraction.execution_conditions[0].source_fragments[0], /^\[\[SOURCE LV Erdarbeiten\.P83 OZ 03\.02\.0040\]\]/);
+});
+test('LV file names with brackets, repeated spaces or decomposed umlauts still ground; bad conditions are dropped', () => {
+  const workflow = JSON.parse(readFileSync(new URL('../workflows/tender-stage2-requirements.json', import.meta.url), 'utf8'));
+  const prepare = new Function('$', workflow.nodes.find((n: { id: string }) => n.id === 'prepare-extraction-text').config.code);
+  for (const name of ['LV [Los 1].x83', 'LV  2.x83', 'Brücke.x83']) {
+    const raw = [{ file: name, bill_of_quantities: { entries: [{ type: 'item', position: '01.0010', short_text: 'Schacht', long_text: 'Schacht mit Zulassung nach DWA A102-2.' }] } }];
+    const prepared = prepare((id: string) => ({ first: () => ({ json: id === 'load-tender' ? { source_type: 'gaeb', raw_gaeb_json: raw, pdf_texts_extracted: null, pdf_text: 'x'.repeat(60) } : {} }) }))[0].json;
+    const blocks = pdfSourceBlocks(prepared.extraction_text);
+    const extraction = validatePdfExtraction(materializePdfSourceRefs({ requirements: [], execution_conditions: [
+      { title: 'DWA', description: 'Zulassung DWA A102-2.', source_refs: ['S000001'] },
+      { title: 'Erfunden', description: 'Gibt es nicht.', source_refs: ['S999999'] },
+    ] }, blocks), prepared.extraction_text, catalogue);
+    assert.deepEqual(extraction.execution_conditions.map(c => c.title), ['DWA'], name);
+  }
+  // Decomposed umlauts in PDF markers ground as well.
+  const pdf = '[[SOURCE Brücke.pdf PAGE 1]]\nISO 9001 ist nachzuweisen.';
+  const pdfBlocks = pdfSourceBlocks(pdf);
+  assert.equal(validatePdfExtraction(materializePdfSourceRefs({ requirements: [{ ...req(4), source_fragments: undefined, source_refs: ['S000001'] }] }, pdfBlocks), pdf, catalogue).requirements.length, 1);
+  // A broken requirement reference still fails closed.
+  assert.throws(() => materializePdfSourceRefs({ requirements: [{ ...req(4), source_refs: ['S999999'] }] }, pdfBlocks), /PDF_EXTRACTION_INVALID/);
+  // LV without citable entries keeps the previous single-call path.
+  const empty = prepare((id: string) => ({ first: () => ({ json: id === 'load-tender' ? { source_type: 'gaeb', raw_gaeb_json: [{ file: 'a.x83', bill_of_quantities: { entries: [] } }], pdf_texts_extracted: null, pdf_text: 'LV Text '.repeat(10) } : {} }) }))[0].json;
+  assert.equal(empty.requirements_coverage.source_scope, 'tender_documents');
 });

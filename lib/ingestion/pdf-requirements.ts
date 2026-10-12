@@ -45,14 +45,19 @@ export function pdfExtractionKey(orgId: string, source: string, catalogue: unkno
 const fail = (): never => { throw new Error('PDF_EXTRACTION_INVALID'); };
 const obj = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fail();
 const str = (value: unknown, max: number): string => typeof value === 'string' && value.trim() && value.length <= max ? compact(value) : fail();
-function grounded(fragment: string, source: string): boolean {
-  const match = fragment.match(new RegExp('^(' + MARKER + ')\\s*([\\s\\S]+)$'));
+// Fragments are stored compacted (NFC, collapsed whitespace), so ground them against the
+// equally compacted source; one cached entry avoids re-compacting per fragment.
+let compactedSource: { raw: string; compact: string } | null = null;
+function grounded(fragment: string, rawSource: string): boolean {
+  const match = compact(fragment).match(new RegExp('^(' + MARKER + ')\\s*([\\s\\S]+)$'));
   if (!match || match[2].trim().length < 1) return false;
+  if (compactedSource?.raw !== rawSource) compactedSource = { raw: rawSource, compact: compact(rawSource) };
+  const source = compactedSource.compact;
   let offset = source.indexOf(match[1]);
   while (offset >= 0) {
     const start = offset + match[1].length;
     const next = source.indexOf('[[SOURCE ', start);
-    if (compact(source.slice(start, next < 0 ? undefined : next)).includes(compact(match[2]))) return true;
+    if (source.slice(start, next < 0 ? undefined : next).includes(match[2])) return true;
     offset = source.indexOf(match[1], start);
   }
   return false;
@@ -124,7 +129,7 @@ export function validatePdfExtraction(raw: unknown, source: string, catalogue: u
   if ('output_limit_reached' in data && typeof data.output_limit_reached !== 'boolean') fail();
   if (Object.keys(data).some(key => !['requirements', 'execution_conditions', 'output_limit_reached'].includes(key))) fail();
   const rawConditions = data.execution_conditions ?? [];
-  if (!Array.isArray(rawConditions) || rawConditions.length > 30) fail();
+  if (!Array.isArray(rawConditions)) fail();
   if (!Array.isArray(data.requirements) || data.requirements.length > requirementLimit) fail();
   const outputLimitReached = data.output_limit_reached === true || (data.requirements as unknown[]).length === requirementLimit;
   const allowed = new Set(Array.isArray(obj(catalogue).entries) ? (obj(catalogue).entries as unknown[]).map(v => obj(v).id) : []);
@@ -139,7 +144,11 @@ export function validatePdfExtraction(raw: unknown, source: string, catalogue: u
     if (kind === null) requirements.push({ ...base, category: item.category as string, is_critical: item.is_critical === true && (hasExclusionLanguage(base.source_fragments) || isStatutoryExclusionGround(base)), is_implicit: false, evidence_kind: item.evidence_kind as string, certificate_catalogue_id: catalogueId });
   }
   const canonicalRequirements = canonical(requirements, 'PDF-REQ-');
-  const conditions = canonical((rawConditions as unknown[]).map(raw => note(raw, source)), 'PDF-EXE-').slice(0, EXECUTION_CONDITION_LIMIT);
+  // Execution conditions are supplementary risk context: an invalid or ungrounded one is
+  // dropped instead of failing the whole extraction.
+  const conditions = canonical((rawConditions as unknown[]).slice(0, 30).flatMap(raw => {
+    try { return [note(raw, source)]; } catch { return []; }
+  }), 'PDF-EXE-').slice(0, EXECUTION_CONDITION_LIMIT);
   return { output_limit_reached: outputLimitReached || canonicalRequirements.length >= requirementLimit, requirements: canonicalRequirements.slice(0, requirementLimit), execution_conditions: conditions };
 }
 
@@ -292,15 +301,21 @@ export function materializePdfSourceRefs(raw: unknown, blocks: PdfSourceBlock[])
   for (const key of ['requirements', 'execution_conditions']) {
     if (key === 'execution_conditions' && data[key] === undefined) { output[key] = []; continue; }
     if (!Array.isArray(data[key])) fail();
-    output[key] = (data[key] as unknown[]).map(rawItem => {
-      const item = obj(rawItem);
-      if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.length > 20) fail();
-      const fragments = (item.source_refs as unknown[]).map(ref => {
-        if (typeof ref !== 'string' || !byRef.has(ref)) return fail();
-        return byRef.get(ref)!;
-      });
-      const { source_refs: _refs, ...fields } = item;
-      return { ...fields, source_fragments: fragments };
+    output[key] = (data[key] as unknown[]).flatMap(rawItem => {
+      try {
+        const item = obj(rawItem);
+        if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.length > 20) fail();
+        const fragments = (item.source_refs as unknown[]).map(ref => {
+          if (typeof ref !== 'string' || !byRef.has(ref)) return fail();
+          return byRef.get(ref)!;
+        });
+        const { source_refs: _refs, ...fields } = item;
+        return [{ ...fields, source_fragments: fragments }];
+      } catch (error) {
+        // Requirements stay strict; a broken execution condition is only dropped.
+        if (key === 'requirements') throw error;
+        return [];
+      }
     });
   }
   return output;

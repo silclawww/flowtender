@@ -63,3 +63,15 @@ test('workflow routes validation through an optional single repair round into th
   assert.equal(node('repair-workload-llm').config.body_input_field, 'repair_request');
   assert.match(node('parse-workload').config.code!, /validation_repair/);
 });
+
+test('extra non-position entries are dropped when every position is valid; repairs stay within 120 IDs', () => {
+  const out = run('validate-workload', combined([1, 2, 3, 4, 5, 6].map(ok).concat([{ id: 'POS-077', type: 'eigen', rule_id: null }])), { 'load-tender': { gaeb_positions: positions } });
+  assert.equal(out.workload_repair, null);
+  assert.deepEqual(JSON.parse(out.choices[0].message.content).classifications.map((c: { id: string }) => c.id), ['POS-001', 'POS-002', 'POS-003', 'POS-004', 'POS-005', 'POS-006']);
+  const many = Array.from({ length: 400 }, (_, i) => ({ id: 'X' + i, short_text: 'P', unit: 'm' }));
+  const key = (i: number) => 'POS-' + String(i + 1).padStart(3, '0');
+  const partial = Array.from({ length: 400 - 121 }, (_, i) => ({ id: key(i), type: 'eigen', rule_id: null }));
+  assert.throws(() => run('validate-workload', combined(partial), { 'load-tender': { gaeb_positions: many } }), /LLM_RESPONSE_INVALID_JSON/);
+  const fewer = Array.from({ length: 400 - 100 }, (_, i) => ({ id: key(i), type: 'eigen', rule_id: null }));
+  assert.equal(run('validate-workload', combined(fewer), { 'load-tender': { gaeb_positions: many } }).workload_repair.affected.length, 100);
+});
