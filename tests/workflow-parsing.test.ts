@@ -689,10 +689,12 @@ test('stage 2 records complete source and below-limit requirement coverage', asy
       source_char_count: sourceText.length,
       extracted_char_count: sourceText.length,
       source_char_limit: 1_000_000,
+      source_scope: 'tender_documents',
       requirement_count: 2,
       requirement_limit: 25,
       requirement_limit_reached: false,
     },
+    execution_conditions: null,
   });
   assert.doesNotMatch(JSON.stringify(parsed.requirements_coverage), /Ausschreibungstext/);
 });
@@ -731,6 +733,7 @@ test('stage 2 keeps the complete 741,129-character large-package source', async 
     source_char_count: 741_129,
     extracted_char_count: 741_129,
     source_char_limit: 1_000_000,
+    source_scope: 'tender_documents',
     requirement_count: 2,
     requirement_limit: 25,
     requirement_limit_reached: false,
@@ -988,6 +991,7 @@ test('stage 2 preserves a valid requirements response exactly', async () => {
   assert.deepEqual(result, [[{ json: {
     requirements,
     requirements_coverage: completeRequirementsCoverage(),
+    execution_conditions: null,
   } }]]);
 });
 
