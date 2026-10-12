@@ -21,7 +21,7 @@ export function createPdfRequirementsExecutor(
       const source = [prepared.selected_checkbox_state, prepared.extraction_text].filter(v => typeof v === 'string' && v).join('\n\n');
       if (source.length < 50 || source.length > 1_000_002) throw new NonRetryableError('PDF_EXTRACTION_SOURCE_INVALID');
       const orgId = String(context.get('trigger')?.[0]?.json.org_id ?? '');
-      if (tender.org_id !== orgId) throw new NonRetryableError('INVALID_TENANT_CONTEXT');
+      if (tender?.org_id !== orgId) throw new NonRetryableError('INVALID_TENANT_CONTEXT');
       const catalogue = prepared.certificate_catalogue ?? { version: null, entries: [] };
       const key = pdfExtractionKey(orgId, source, catalogue);
       try {

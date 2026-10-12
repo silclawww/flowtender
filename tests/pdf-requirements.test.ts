@@ -335,18 +335,18 @@ test('cross-chunk items citing the same form merge with all evidence; statutory 
   const a = { ...req(4), evidence_kind: 'form', title: 'Erklärung Bezug Russland', description: 'Erklärung (Formblatt 127) einreichen.', source_fragments: ['[[SOURCE vhb.pdf PAGE 1]] A'] };
   const b = { ...a, title: 'Russland-Sanktionen', description: 'Gemäß Formblatt 127 mit dem Angebot.', is_critical: false, source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] B'] };
   const c = { ...a, title: 'Holz', description: 'Formblatt 248 einreichen.', source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] C'] };
-  const merged = mergePdfExtractions([{ requirements: [a] as any, output_limit_reached: false }, { requirements: [b, c] as any, output_limit_reached: false }]);
+  const merged = mergePdfExtractions([{ requirements: [a] as any, output_limit_reached: false, execution_conditions: [] }, { requirements: [b, c] as any, output_limit_reached: false, execution_conditions: [] }]);
   assert.equal(merged.requirements.length, 2);
   const russia = merged.requirements.find(r => r.description.includes('127'))!;
   assert.deepEqual(russia.source_fragments, ['[[SOURCE vhb.pdf PAGE 1]] A', '[[SOURCE vhb.pdf PAGE 9]] B']);
   assert.equal(russia.is_critical, true);
-  assert.equal(mergePdfExtractions([{ requirements: [a, b] as any, output_limit_reached: false }]).requirements.length, 2);
+  assert.equal(mergePdfExtractions([{ requirements: [a, b] as any, output_limit_reached: false, execution_conditions: [] }]).requirements.length, 2);
   // Umbrella form 124: different requirements citing the same form never merge.
   const ref = { ...a, title: 'Referenznachweise', description: 'Gemäß Formblatt 124.', source_fragments: ['[[SOURCE vhb.pdf PAGE 2]] R'] };
   const reg = { ...a, title: 'Gewerbeanmeldung', description: 'Gemäß Formblatt 124.', source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] G'] };
-  assert.equal(mergePdfExtractions([{ requirements: [ref] as any, output_limit_reached: false }, { requirements: [reg] as any, output_limit_reached: false }]).requirements.length, 2);
+  assert.equal(mergePdfExtractions([{ requirements: [ref] as any, output_limit_reached: false, execution_conditions: [] }, { requirements: [reg] as any, output_limit_reached: false, execution_conditions: [] }]).requirements.length, 2);
   // A critical duplicate is kept as the representative.
-  const kept = mergePdfExtractions([{ requirements: [{ ...b, source_fragments: ['[[SOURCE vhb.pdf PAGE 1]] B'] }] as any, output_limit_reached: false }, { requirements: [{ ...a, source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] A'] }] as any, output_limit_reached: false }]).requirements;
+  const kept = mergePdfExtractions([{ requirements: [{ ...b, source_fragments: ['[[SOURCE vhb.pdf PAGE 1]] B'] }] as any, output_limit_reached: false, execution_conditions: [] }, { requirements: [{ ...a, source_fragments: ['[[SOURCE vhb.pdf PAGE 9]] A'] }] as any, output_limit_reached: false, execution_conditions: [] }]).requirements;
   assert.equal(kept.length, 1); assert.equal(kept[0].title, 'Erklärung Bezug Russland'); assert.equal(kept[0].is_critical, true);
   assert.equal(isStatutoryExclusionGround({ ...note(0), title: 'Referenznachweise', description: 'Angaben gemäß Formblatt Eigenerklärung zur Eignung' }), false);
   assert.equal(isStatutoryExclusionGround({ ...note(0), title: 'Eignungsnachweis ueber Praequalifikation', description: '' }), true);
