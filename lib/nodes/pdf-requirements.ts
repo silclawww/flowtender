@@ -11,9 +11,12 @@ export function createPdfRequirementsExecutor(
   return {
     async execute(config, input, context, runtime) {
       const tender = context.get('load-tender')?.[0]?.json;
-      if (tender?.source_type !== 'pdf') return http.execute(config, input, context, runtime);
       const prepared = context.get('prepare-extraction-text')?.[0]?.json ?? {};
-      const coverage = prepared.requirements_coverage as { source_insufficient?: boolean } | undefined;
+      const coverage = prepared.requirements_coverage as { source_insufficient?: boolean; source_scope?: string } | undefined;
+      // PDF and LV-only GAEB uploads use the qualification-only extractor; GAEB tender
+      // bundles keep their calibrated single-call prompt.
+      const scope = coverage?.source_scope ?? (tender?.source_type === 'pdf' ? 'pdf' : 'tender_documents');
+      if (scope !== 'pdf' && scope !== 'lv_only') return http.execute(config, input, context, runtime);
       if (coverage?.source_insufficient) throw new NonRetryableError('PDF_EXTRACTION_SOURCE_INSUFFICIENT');
       const source = [prepared.selected_checkbox_state, prepared.extraction_text].filter(v => typeof v === 'string' && v).join('\n\n');
       if (source.length < 50 || source.length > 1_000_002) throw new NonRetryableError('PDF_EXTRACTION_SOURCE_INVALID');
